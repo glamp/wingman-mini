@@ -13,9 +13,20 @@ Plain JavaScript, HTML, and CSS — Manifest V3, no backend, no build step.
 
 ## Install (unpacked)
 
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode** (top right).
-3. Click **Load unpacked** and select this `amigo/` folder.
+First, download the extension to your computer:
+
+1. Go to <https://github.com/glamp/wingman-mini>.
+2. Click the green **Code** button, then **Download ZIP**.
+3. Find the downloaded `wingman-mini-main.zip` (usually in your **Downloads** folder) and
+   double-click it to unzip. You'll get a `wingman-mini-main` folder.
+
+Then load it into Chrome:
+
+4. Open a new Chrome tab and go to `chrome://extensions`.
+5. Turn on **Developer mode** (toggle in the top right).
+6. Click **Load unpacked** and select the `wingman-mini-main` folder you just unzipped.
+7. Wingman now appears in your toolbar. (If you don't see it, click the puzzle-piece icon
+   and pin it.)
 
 ## Set up Trello
 
