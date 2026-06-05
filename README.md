@@ -3,8 +3,11 @@
 A small internal Chrome extension for capturing bugs and feedback straight into Trello.
 
 Click the toolbar icon (or press **Alt+Shift+W**), grab a **screenshot** or a **screen
-recording**, fill in a short form, and Wingman creates a clean Trello card in your
-configured board/list with the media attached.
+recording**, optionally **describe the bug out loud**, and Wingman creates a clean Trello
+card in your configured board/list with the media attached.
+
+Wingman transcribes your voice (Whisper) and auto-fills the form (GPT-OSS 120B), then adds
+the transcript to the card. A Groq API key is required.
 
 Plain JavaScript, HTML, and CSS — Manifest V3, no backend, no build step.
 
@@ -23,8 +26,11 @@ Plain JavaScript, HTML, and CSS — Manifest V3, no backend, no build step.
 4. Paste your **API key**, **token**, and **reporter name**.
 5. Click **Test Trello connection** — you should see "Connected as …".
 6. Pick a **board**, then a **list**, optionally add **default labels**, and **Save**.
+7. Paste a **Groq API key** (from <https://console.groq.com/keys>) — required for voice
+   transcription and form auto-fill.
 
-Settings are stored in `chrome.storage.local`.
+Settings are stored in `chrome.storage.local`. Until Trello **and** Groq are configured,
+opening Wingman shows a setup prompt with a button to the options page.
 
 ## Use it
 
@@ -33,8 +39,10 @@ Settings are stored in `chrome.storage.local`.
 2. Click the Wingman icon or press **Alt+Shift+W**.
 3. Choose **Screenshot** (drag to crop, or submit to use the full shot) or
    **Screen recording** (pick a tab/window/screen, then **Stop**).
-4. Fill in the form and click **Create Trello card**.
-5. Follow the success link to the new card.
+4. (Optional) Click **🎙 Record voice** (screenshot mode) or just narrate while screen
+   recording — Wingman transcribes it and fills the form for you to review.
+5. Edit anything, then click **Create Trello card**.
+6. Follow the success link to the new card.
 
 > Screen recording requires a secure page (`https` or `localhost`).
 
@@ -48,8 +56,9 @@ manifest.json          MV3 config, permissions, keyboard command
 icons/                 toolbar icons (16/48/128)
 src/
   background.js        captures the visible tab + page context, opens the report window
-  report.html/.js      the capture/report UI (mode toggle, crop, recording, form, submit)
-  capture.js           recording, poster-frame extraction, screenshot cropping
+  report.html/.js      the capture/report UI (setup gate, crop, recording, voice, submit)
+  capture.js           screen + mic recording, poster-frame extraction, screenshot cropping
+  groq.js              Whisper transcription + chat-model form auto-fill
   trello.js            Trello API calls (test, boards, lists, create card, attach)
   markdown.js          deterministic card title + description
   storage.js           chrome.storage.local wrapper

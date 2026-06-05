@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wingman settings</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="wm-options">
+    <main class="wm-card">
+      <header class="wm-opt-header">
+        <h1>Wingman</h1>
+        <p>Connect Trello and choose where bug/feedback cards land.</p>
+      </header>
+
+      <section>
+        <h2>Trello credentials</h2>
+        <label class="wm-field">
+          <span class="wm-label">API key</span>
+          <input id="apiKey" class="wm-input" type="text" autocomplete="off" placeholder="Your Trello API key" />
+        </label>
+        <label class="wm-field">
+          <span class="wm-label">Token</span>
+          <input id="token" class="wm-input" type="password" autocomplete="off" placeholder="Your Trello token" />
+        </label>
+        <p class="wm-help">
+          Get a key at
+          <a href="https://trello.com/app-key" target="_blank" rel="noopener">trello.com/app-key</a>,
+          then generate a token from the same page.
+        </p>
+        <button id="testBtn" class="wm-btn">Test Trello connection</button>
+        <span id="testMsg" class="wm-inline-msg"></span>
+      </section>
+
+      <section>
+        <h2>Destination</h2>
+        <label class="wm-field">
+          <span class="wm-label">Board</span>
+          <select id="board" class="wm-input" disabled>
+            <option value="">Test the connection first…</option>
+          </select>
+        </label>
+        <label class="wm-field">
+          <span class="wm-label">List</span>
+          <select id="list" class="wm-input" disabled>
+            <option value="">Select a board first…</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h2>Voice transcription (Groq)</h2>
+        <label class="wm-field">
+          <span class="wm-label">Groq API key</span>
+          <input id="groqApiKey" class="wm-input" type="password" autocomplete="off" placeholder="Your Groq API key" required />
+        </label>
+        <p class="wm-help">
+          Required — powers voice transcription and form auto-fill. Get a key at
+          <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Report defaults</h2>
+        <label class="wm-field">
+          <span class="wm-label">Reporter name</span>
+          <input id="reporterName" class="wm-input" type="text" placeholder="e.g. Greg" />
+        </label>
+        <label class="wm-field">
+          <span class="wm-label">Default labels (optional)</span>
+          <input id="defaultLabels" class="wm-input" type="text" placeholder="comma,separated,label,names" />
+          <span class="wm-help">Matched by name against the selected board's labels.</span>
+        </label>
+      </section>
+
+      <footer class="wm-opt-footer">
+        <button id="saveBtn" class="wm-btn wm-btn-primary">Save settings</button>
+        <span id="saveMsg" class="wm-inline-msg"></span>
+      </footer>
+    </main>
+
+    <script src="storage.js"></script>
+    <script src="trello.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
