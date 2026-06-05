@@ -2,6 +2,16 @@
 // All of this runs in the page (content-script) context because MediaRecorder and the
 // resulting Blob cannot cross chrome.runtime messaging.
 (function () {
+  // Blob -> base64 string (no data: prefix). Used to hand small audio to the background.
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+      reader.onerror = () => reject(new Error("Could not read the audio."));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   function dataUrlToBlob(dataUrl) {
     const [header, base64] = dataUrl.split(",");
     const mime = (header.match(/data:([^;]+)/) || [])[1] || "image/png";
@@ -232,5 +242,6 @@
     posterFromVideoBlob,
     cropDataUrl,
     dataUrlToBlob,
+    blobToBase64,
   };
 })();

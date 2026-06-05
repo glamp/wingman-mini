@@ -1,6 +1,6 @@
 // Groq helpers: transcribe audio (Whisper) and extract bug/feedback form fields from the
-// transcript (chat model with JSON output). Called from the report window; extension pages
-// with host_permissions for api.groq.com can fetch directly.
+// transcript (chat model with JSON output). Loaded into the background service worker
+// (via importScripts), which has host_permissions for api.groq.com and bypasses CORS.
 (function () {
   const BASE = "https://api.groq.com/openai/v1";
   const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";

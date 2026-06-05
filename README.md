@@ -48,20 +48,23 @@ opening Wingman shows a setup prompt with a button to the options page.
 
 ## Project layout
 
-The capture/report UI runs in its own small popup window (not injected into the page),
-so there are no page-layout conflicts and the screenshot never contains Wingman's own UI.
+The capture/report UI is an in-page modal rendered inside a Shadow DOM (style-isolated from
+the page). The screenshot is captured *before* the overlay is drawn, so it never contains
+Wingman's own UI. Groq calls go through the background service worker (a content script can't
+call Groq directly because of CORS); Trello is called straight from the overlay.
 
 ```
-manifest.json          MV3 config, permissions, keyboard command
+manifest.json          MV3 config, permissions, content scripts, keyboard command
 icons/                 toolbar icons (16/48/128)
 src/
-  background.js        captures the visible tab + page context, opens the report window
-  report.html/.js      the capture/report UI (setup gate, crop, recording, voice, submit)
+  background.js        triggers the overlay, captures the tab, proxies Groq calls
+  content.js           builds the Shadow-DOM host and mounts the overlay
+  overlay.js           the capture/report UI (setup gate, crop, recording, voice, submit)
   capture.js           screen + mic recording, poster-frame extraction, screenshot cropping
-  groq.js              Whisper transcription + chat-model form auto-fill
+  groq.js              Whisper transcription + chat-model form auto-fill (runs in background)
   trello.js            Trello API calls (test, boards, lists, create card, attach)
   markdown.js          deterministic card title + description
   storage.js           chrome.storage.local wrapper
   options.html/.js     setup page (credentials + board/list dropdowns)
-  styles.css           report + options styling
+  styles.css           overlay + options styling
 ```
