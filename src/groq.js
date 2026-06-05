@@ -1,18 +1,20 @@
-// Groq helpers: transcribe audio (Whisper) and extract bug/feedback form fields from the
-// transcript (chat model with JSON output). Loaded into the background service worker
-// (via importScripts), which has host_permissions for api.groq.com and bypasses CORS.
+// Groq helpers: transcribe audio (Whisper), translate non-English transcripts to English,
+// and extract bug/feedback form fields from the transcript (chat model with JSON output).
+// Loaded into the background service worker (via importScripts), which has host_permissions
+// for api.groq.com and bypasses CORS.
 (function () {
   const BASE = "https://api.groq.com/openai/v1";
   const TRANSCRIBE_MODEL = "whisper-large-v3-turbo";
   const EXTRACT_MODEL = "openai/gpt-oss-120b";
 
-  // Audio blob -> transcript string.
+  // Audio blob -> { text, language }. `language` is Whisper's detected language name
+  // (e.g. "english", "spanish"); the caller uses it to decide whether to translate.
   async function transcribe(apiKey, blob, filename = "audio.webm") {
     if (!apiKey) throw new Error("Missing Groq API key (set it in Wingman options).");
     const form = new FormData();
     form.append("file", blob, filename);
     form.append("model", TRANSCRIBE_MODEL);
-    form.append("response_format", "json");
+    form.append("response_format", "verbose_json");
 
     const res = await fetch(`${BASE}/audio/transcriptions`, {
       method: "POST",
@@ -24,7 +26,41 @@
       throw new Error(`Transcription failed (HTTP ${res.status}). ${text}`.trim());
     }
     const data = await res.json();
-    return (data.text || "").trim();
+    return { text: (data.text || "").trim(), language: data.language || "" };
+  }
+
+  const TRANSLATE_PROMPT = [
+    "Translate the user's message into natural English.",
+    "Output ONLY the translation, with no preamble, notes, or surrounding quotes.",
+    "If it is already English, return it unchanged.",
+  ].join(" ");
+
+  // Text in any language -> English text. Skips the API call for empty input and falls
+  // back to the original text if the model returns nothing.
+  async function translate(apiKey, text) {
+    if (!apiKey) throw new Error("Missing Groq API key (set it in Wingman options).");
+    if (!text || !text.trim()) return text;
+    const res = await fetch(`${BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: EXTRACT_MODEL,
+        temperature: 0,
+        messages: [
+          { role: "system", content: TRANSLATE_PROMPT },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`Translation failed (HTTP ${res.status}). ${errText}`.trim());
+    }
+    const data = await res.json();
+    return (data.choices?.[0]?.message?.content || "").trim() || text;
   }
 
   const SYSTEM_PROMPT = [
@@ -39,6 +75,8 @@
     '"notes" (anything extra, else "").',
     "Use information only from the transcript. If something isn't mentioned, use an empty",
     'string "" (for severity default to "Medium"). Do not invent details.',
+    "Always write all field values in English; if the transcript is in another language,",
+    "translate the content to English.",
   ].join(" ");
 
   // Transcript string -> { type, title, whatHappened, expectedBehavior,
@@ -100,5 +138,5 @@
   }
 
   globalThis.Wingman = globalThis.Wingman || {};
-  globalThis.Wingman.groq = { transcribe, extractFields };
+  globalThis.Wingman.groq = { transcribe, translate, extractFields };
 })();

@@ -67,7 +67,12 @@ async function transcribe(audioBase64, mime) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const blob = new Blob([bytes], { type: mime || "audio/webm" });
-  return groq.transcribe(key, blob);
+  const { text, language } = await groq.transcribe(key, blob);
+  // Translate to English when Whisper detects a non-English language so the transcript,
+  // auto-filled form, and Trello card all come out in English.
+  const lang = (language || "").toLowerCase();
+  const isEnglish = !lang || lang === "english" || lang === "en";
+  return isEnglish ? text : groq.translate(key, text);
 }
 
 function notify(message) {
