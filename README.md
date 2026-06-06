@@ -2,7 +2,7 @@
 
 A small internal Chrome extension for capturing bugs and feedback straight into Trello.
 
-Click the toolbar icon (or press **Alt+Shift+W**), grab a **screenshot** or a **screen
+Click the toolbar icon (or press **⌘+Shift+K** on Mac / **Alt+Shift+K** on Windows/Linux), grab a **screenshot** or a **screen
 recording**, optionally **describe the bug out loud**, and Wingman creates a clean Trello
 card in your configured board/list with the media attached.
 
@@ -11,22 +11,27 @@ the transcript to the card. A Groq API key is required.
 
 Plain JavaScript, HTML, and CSS — Manifest V3, no backend, no build step.
 
-## Install (unpacked)
+## Install
 
-First, download the extension to your computer:
+Install from the Chrome Web Store:
 
-1. Go to <https://github.com/glamp/wingman-mini>.
-2. Click the green **Code** button, then **Download ZIP**.
-3. Find the downloaded `wingman-mini-main.zip` (usually in your **Downloads** folder) and
-   double-click it to unzip. You'll get a `wingman-mini-main` folder.
-
-Then load it into Chrome:
-
-4. Open a new Chrome tab and go to `chrome://extensions`.
-5. Turn on **Developer mode** (toggle in the top right).
-6. Click **Load unpacked** and select the `wingman-mini-main` folder you just unzipped.
-7. Wingman now appears in your toolbar. (If you don't see it, click the puzzle-piece icon
+1. Open <https://chromewebstore.google.com/detail/wingman/hdbmgfgonajjmibdlaljefopoiogfmlf>.
+2. Click **Add to Chrome**, then **Add extension**.
+3. Wingman now appears in your toolbar. (If you don't see it, click the puzzle-piece icon
    and pin it.)
+
+Chrome keeps the extension up to date automatically — there's nothing to re-download when
+a new version ships.
+
+### Install (unpacked, for development)
+
+To run from source instead:
+
+1. Clone or download this repo.
+2. Open `chrome://extensions` and turn on **Developer mode** (top right).
+3. Click **Load unpacked** and select the repo folder.
+
+> Note: unpacked installs do **not** auto-update — use the Web Store link above for that.
 
 ## Set up Trello
 
@@ -47,7 +52,7 @@ opening Wingman shows a setup prompt with a button to the options page.
 
 1. Go to any normal `http://`/`https://` page (Wingman can't run on `chrome://` or the
    Web Store).
-2. Click the Wingman icon or press **Alt+Shift+W**.
+2. Click the Wingman icon or press **⌘+Shift+K** (Mac) / **Alt+Shift+K** (Windows/Linux).
 3. Choose **Screenshot** (drag to crop, or submit to use the full shot) or
    **Screen recording** (pick a tab/window/screen, then **Stop**).
 4. (Optional) Click **🎙 Record voice** (screenshot mode) or just narrate while screen

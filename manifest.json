@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wingman",
-  "version": "0.1.0",
+  "version": "1.0.5",
   "description": "Capture a screenshot or screen recording and file a clean Trello card.",
   "permissions": ["activeTab", "tabs", "scripting", "storage", "notifications"],
   "host_permissions": ["https://api.trello.com/*", "https://api.groq.com/*"],
@@ -35,8 +35,8 @@
   "commands": {
     "activate-wingman": {
       "suggested_key": {
-        "default": "Alt+Shift+W",
-        "mac": "Alt+Shift+W"
+        "default": "Alt+Shift+K",
+        "mac": "Command+Shift+K"
       },
       "description": "Capture a screenshot / recording with Wingman"
     }

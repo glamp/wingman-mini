@@ -114,7 +114,7 @@
 
         <footer class="wm-footer" id="footer">
           <span id="msg" class="wm-msg" hidden></span>
-          <button id="submit" class="wm-btn wm-btn-primary">Create Trello card</button>
+          <button id="submit" class="wm-btn wm-btn-primary" title="Submit (Cmd/Ctrl+Enter)">Create Trello card</button>
         </footer>
       </div>
     </div>
@@ -149,21 +149,27 @@
     backdrop.addEventListener("mousedown", (e) => {
       if (e.target === backdrop) close();
     });
-    document.addEventListener("keydown", onEsc, true);
+    document.addEventListener("keydown", onKeydown, true);
 
     init();
   }
 
-  function onEsc(e) {
-    if (e.key === "Escape" && state) {
+  function onKeydown(e) {
+    if (!state) return;
+    if (e.key === "Escape") {
       e.stopPropagation();
       close();
+    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      // Cmd+Enter (Mac) / Ctrl+Enter (Win/Linux) submits the form.
+      e.preventDefault();
+      e.stopPropagation();
+      submit();
     }
   }
 
   function close() {
     if (!state) return;
-    document.removeEventListener("keydown", onEsc, true);
+    document.removeEventListener("keydown", onKeydown, true);
     if (state.onMove) window.removeEventListener("mousemove", state.onMove);
     if (state.onUp) window.removeEventListener("mouseup", state.onUp);
     removeStopBar();

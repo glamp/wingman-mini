@@ -1,0 +1,4 @@
+# Build artifact produced by scripts/package.sh
+wingman.zip
+
+.DS_Store
