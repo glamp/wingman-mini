@@ -9,6 +9,17 @@ chrome.commands.onCommand.addListener((command, tab) => {
   if (command === "activate-wingman") activate(tab);
 });
 
+// Mirrors manifest.json content_scripts.js order so the globalThis.Wingman.* dependency
+// chain loads correctly when we inject programmatically.
+const CONTENT_SCRIPTS = [
+  "src/storage.js",
+  "src/markdown.js",
+  "src/trello.js",
+  "src/capture.js",
+  "src/overlay.js",
+  "src/content.js",
+];
+
 async function activate(tab) {
   if (!tab || !tab.id) return;
   if (!/^https?:\/\//i.test(tab.url || "")) {
@@ -17,7 +28,19 @@ async function activate(tab) {
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "WM_ACTIVATE" });
   } catch (err) {
-    notify("Wingman isn't active on this tab yet — reload the page and try again.");
+    // Content script not present (e.g. the tab predates install — declarative content
+    // scripts only inject into pages loaded after the extension was enabled). Inject the
+    // scripts on demand, then retry. Trying sendMessage first means already-injected tabs
+    // never get a second copy of the listeners/overlay.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: CONTENT_SCRIPTS,
+      });
+      await chrome.tabs.sendMessage(tab.id, { type: "WM_ACTIVATE" });
+    } catch (injectErr) {
+      notify("Wingman couldn't start on this page. Try reloading and clicking again.");
+    }
   }
 }
 

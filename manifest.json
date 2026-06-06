@@ -3,7 +3,7 @@
   "name": "Wingman",
   "version": "0.1.0",
   "description": "Capture a screenshot or screen recording and file a clean Trello card.",
-  "permissions": ["activeTab", "tabs", "storage", "notifications"],
+  "permissions": ["activeTab", "tabs", "scripting", "storage", "notifications"],
   "host_permissions": ["https://api.trello.com/*", "https://api.groq.com/*"],
   "background": {
     "service_worker": "src/background.js"
