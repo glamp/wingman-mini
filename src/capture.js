@@ -74,10 +74,21 @@
     };
   }
 
+  // Roll a new video file before this many bytes so no single attachment trips Trello's
+  // ~10 MB limit. A segment can overshoot by at most one timeslice of buffered data
+  // (~125 KB at the 2 Mbps ceiling, 500 ms slices), so 9.5 MB stays safely under 10 MB.
+  const SEGMENT_LIMIT = 9.5 * 1024 * 1024;
+  // ~2 Mbps ceiling — crisp text for screen content. The encoder spends fewer bits when the
+  // screen is static, so typical recordings come in well under this. The one quality lever.
+  const VIDEO_BPS = 2_000_000;
+  const AUDIO_BPS = 64_000;
+
   // Start a screen recording with microphone narration. Shows Chrome's native share picker
-  // (tab/window/screen). Returns a controller: { stop(): Promise<{videoBlob, audioBlob}> }.
-  // `videoBlob` is the screen recording with the mic mixed in; `audioBlob` is a small
-  // audio-only webm (mic) used for transcription (null if the mic was denied). If the user
+  // (tab/window/screen). Returns a controller: { stop(): Promise<{videoBlobs, audioBlob}> }.
+  // `videoBlobs` is an array of independently-playable webm segments (the screen recording
+  // with the mic mixed in), split so each stays under Trello's attachment limit — usually a
+  // single file, more for long/busy recordings. `audioBlob` is a small audio-only webm (mic)
+  // used for transcription (null if the mic was denied). There is no length cap. If the user
   // ends sharing from Chrome's own UI, onEnded() fires.
   async function startRecording({ onEnded } = {}) {
     if (!window.isSecureContext) {
@@ -111,11 +122,57 @@
     // Combined stream (video + mic) for the saved recording.
     const videoMime = pickVideoMime();
     const combined = new MediaStream(micTrack ? [videoTrack, micTrack] : [videoTrack]);
-    const videoRecorder = new MediaRecorder(combined, { mimeType: videoMime });
-    const videoChunks = [];
-    videoRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) videoChunks.push(e.data);
-    };
+
+    // Finished segments accumulate here. Each MediaRecorder session produces one complete,
+    // independently-playable webm — byte-splitting a single blob is impossible because only
+    // the first chunk carries the container header, so we roll fresh recorders instead.
+    const videoBlobs = [];
+    let videoRecorder = null;
+    let rolling = false; // true while intentionally finalizing one segment to start the next
+
+    let stopResolve;
+    const stopped = new Promise((resolve) => (stopResolve = resolve));
+
+    function finalize() {
+      displayStream.getTracks().forEach((t) => t.stop());
+      if (micStream) micStream.getTracks().forEach((t) => t.stop());
+      stopResolve({
+        videoBlobs,
+        audioBlob: micTrack ? new Blob(audioChunks, { type: audioMime }) : null,
+      });
+    }
+
+    function makeSegmentRecorder() {
+      const r = new MediaRecorder(combined, {
+        mimeType: videoMime,
+        videoBitsPerSecond: VIDEO_BPS,
+        audioBitsPerSecond: AUDIO_BPS,
+      });
+      const chunks = [];
+      let bytes = 0;
+      r.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+          bytes += e.data.size;
+        }
+        // Roll to a new file before the segment grows past the limit.
+        if (bytes >= SEGMENT_LIMIT && r.state === "recording") {
+          rolling = true;
+          r.stop();
+        }
+      };
+      r.onstop = () => {
+        if (chunks.length) videoBlobs.push(new Blob(chunks, { type: videoMime }));
+        if (rolling) {
+          rolling = false;
+          videoRecorder = makeSegmentRecorder();
+          videoRecorder.start(500);
+        } else {
+          finalize();
+        }
+      };
+      return r;
+    }
 
     // Separate audio-only recorder (mic) for a small transcription upload.
     let audioRecorder = null;
@@ -128,20 +185,10 @@
       };
     }
 
-    let stopResolve;
-    const stopped = new Promise((resolve) => (stopResolve = resolve));
-    videoRecorder.onstop = () => {
-      displayStream.getTracks().forEach((t) => t.stop());
-      if (micStream) micStream.getTracks().forEach((t) => t.stop());
-      stopResolve({
-        videoBlob: new Blob(videoChunks, { type: videoMime }),
-        audioBlob: micTrack ? new Blob(audioChunks, { type: audioMime }) : null,
-      });
-    };
-
     function stopAll() {
+      rolling = false; // a manual/ended stop finalizes rather than rolling
       if (audioRecorder && audioRecorder.state !== "inactive") audioRecorder.stop();
-      if (videoRecorder.state !== "inactive") videoRecorder.stop();
+      if (videoRecorder && videoRecorder.state !== "inactive") videoRecorder.stop();
     }
 
     // The user can stop sharing from Chrome's bar — treat that as "stop".
@@ -150,7 +197,9 @@
       if (typeof onEnded === "function") onEnded();
     });
 
-    videoRecorder.start();
+    // 500 ms timeslice so ondataavailable fires ~2×/sec and the size check runs continuously.
+    videoRecorder = makeSegmentRecorder();
+    videoRecorder.start(500);
     if (audioRecorder) audioRecorder.start();
 
     return {

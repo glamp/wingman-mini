@@ -64,9 +64,11 @@
   }
 
   const SYSTEM_PROMPT = [
-    "You turn a spoken bug/feedback report into structured fields for a ticket.",
+    "You turn a spoken bug/feedback/feature report into structured fields for a ticket.",
     "Return ONLY a JSON object with exactly these keys:",
-    '"type" (either "bug" or "feedback"),',
+    '"type" (one of "bug", "feedback", or "feature": bug = something is broken or not working;',
+    'feedback = an opinion or UX comment about existing behavior; feature = a request for new',
+    "functionality that doesn't exist yet),",
     '"title" (a short one-line summary),',
     '"whatHappened",',
     '"expectedBehavior",',
@@ -112,7 +114,7 @@
       throw new Error("Groq returned an unreadable response for the form fields.");
     }
     return {
-      type: parsed.type === "feedback" ? "feedback" : "bug",
+      type: ["bug", "feedback", "feature"].includes(parsed.type) ? parsed.type : "bug",
       title: parsed.title || "",
       whatHappened: parsed.whatHappened || "",
       expectedBehavior: parsed.expectedBehavior || "",

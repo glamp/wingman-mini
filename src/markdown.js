@@ -1,9 +1,11 @@
 // Deterministic Markdown generation for the Trello card title + description.
 (function () {
-  // "[Bug] Cannot move aircraft into Hangar 2"
+  // Type marker shown as a leading emoji in the card title. Trello renders real Unicode
+  // emoji in titles (but not :shortcode: syntax). "🐞 Cannot move aircraft into Hangar 2"
+  const TYPE_EMOJI = { bug: "🐞", feedback: "♻️", feature: "💡" };
   function buildTitle(fields) {
-    const type = fields.type === "feedback" ? "Feedback" : "Bug";
-    return `[${type}] ${fields.title || "Untitled"}`;
+    const emoji = TYPE_EMOJI[fields.type] || TYPE_EMOJI.bug;
+    return `${emoji} ${fields.title || "Untitled"}`;
   }
 
   // Fall back to a placeholder so empty optional fields stay readable.
@@ -12,12 +14,16 @@
     return t.length ? t : "_None provided._";
   }
 
-  // captureKind is "screenshot" or "recording"; transcript is optional.
-  function buildDescription(fields, context, captureKind, transcript) {
-    const media =
-      captureKind === "recording"
-        ? "## Recording\n\nVideo attached (poster frame included)."
-        : "## Screenshot\n\nAttached.";
+  // captureKind is "screenshot" or "recording"; transcript is optional. videoCount is the
+  // number of video files attached (the recording is split when it would exceed Trello's
+  // size limit); defaults to 1.
+  function buildDescription(fields, context, captureKind, transcript, videoCount) {
+    const parts = videoCount || 1;
+    const recordingNote =
+      parts > 1
+        ? `## Recording\n\nVideo attached in ${parts} parts (poster frame included).`
+        : "## Recording\n\nVideo attached (poster frame included).";
+    const media = captureKind === "recording" ? recordingNote : "## Screenshot\n\nAttached.";
 
     const transcriptSection = (transcript || "").trim()
       ? ["## Transcript", "", transcript.trim(), ""]

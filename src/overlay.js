@@ -76,6 +76,7 @@
                   <select id="type" class="wm-input">
                     <option value="bug">Bug</option>
                     <option value="feedback">Feedback</option>
+                    <option value="feature">New Feature</option>
                   </select>
                 </label>
                 <label class="wm-field">
@@ -135,7 +136,7 @@
       cropRect: null,
       recorder: null,
       micRecorder: null,
-      videoBlob: null,
+      videoBlobs: [],
       posterBlob: null,
       audioBlob: null,
       transcript: "",
@@ -279,7 +280,7 @@
     const { $ } = state;
     $("startRec").addEventListener("click", startRec);
     $("recAgain").addEventListener("click", () => {
-      state.videoBlob = null;
+      state.videoBlobs = [];
       state.posterBlob = null;
       $("recordDone").hidden = true;
       $("recordIdle").hidden = false;
@@ -307,11 +308,12 @@
     state.recorder = null;
     state.host.style.display = "block";
     try {
-      const { videoBlob, audioBlob } = await rec.stop();
-      state.videoBlob = videoBlob;
+      const { videoBlobs, audioBlob } = await rec.stop();
+      state.videoBlobs = videoBlobs;
       state.audioBlob = audioBlob;
-      state.posterBlob = await capture.posterFromVideoBlob(videoBlob).catch(() => null);
-      $("recVideo").src = URL.createObjectURL(videoBlob);
+      // Poster + preview use the first segment.
+      state.posterBlob = await capture.posterFromVideoBlob(videoBlobs[0]).catch(() => null);
+      $("recVideo").src = URL.createObjectURL(videoBlobs[0]);
       $("recordIdle").hidden = true;
       $("recordDone").hidden = false;
       if (audioBlob) transcribeAndFill(audioBlob);
@@ -455,7 +457,7 @@
     if (!auth.apiKey) return showMsg("Missing Trello API key. Open Wingman options.", "error");
     if (!auth.token) return showMsg("Missing Trello token. Open Wingman options.", "error");
     if (!settings.listId) return showMsg("No Trello list selected. Open Wingman options.", "error");
-    if (state.mode === "recording" && !state.videoBlob) {
+    if (state.mode === "recording" && !state.videoBlobs.length) {
       return showMsg("Record a video first, or switch to Screenshot.", "error");
     }
 
@@ -474,7 +476,13 @@
       };
 
       const name = markdown.buildTitle(fields);
-      const desc = markdown.buildDescription(fields, context, state.mode, state.transcript);
+      const desc = markdown.buildDescription(
+        fields,
+        context,
+        state.mode,
+        state.transcript,
+        state.videoBlobs.length
+      );
       const labelIds = await trello
         .resolveLabelIds(auth, settings.boardId, settings.defaultLabels)
         .catch(() => []);
@@ -482,7 +490,14 @@
       const card = await trello.createCard(auth, { listId: settings.listId, name, desc, labelIds });
 
       if (state.mode === "recording") {
-        await trello.attachToCard(auth, card.id, state.videoBlob, "recording.webm");
+        const blobs = state.videoBlobs;
+        if (blobs.length === 1) {
+          await trello.attachToCard(auth, card.id, blobs[0], "recording.webm");
+        } else {
+          for (let i = 0; i < blobs.length; i++) {
+            await trello.attachToCard(auth, card.id, blobs[i], `recording-${i + 1}.webm`);
+          }
+        }
         if (state.posterBlob) await trello.attachToCard(auth, card.id, state.posterBlob, "poster.png");
       } else {
         const blob = state.cropRect
