@@ -9,16 +9,10 @@ chrome.commands.onCommand.addListener((command, tab) => {
   if (command === "activate-wingman") activate(tab);
 });
 
-// Mirrors manifest.json content_scripts.js order so the globalThis.Wingman.* dependency
-// chain loads correctly when we inject programmatically.
-const CONTENT_SCRIPTS = [
-  "src/storage.js",
-  "src/markdown.js",
-  "src/trello.js",
-  "src/capture.js",
-  "src/overlay.js",
-  "src/content.js",
-];
+// Read straight from manifest.json so the globalThis.Wingman.* dependency chain loads
+// correctly (and in the same order) when we inject programmatically. Deriving it here
+// instead of keeping a second hand-maintained copy means the two can never drift.
+const CONTENT_SCRIPTS = chrome.runtime.getManifest().content_scripts[0].js;
 
 async function activate(tab) {
   if (!tab || !tab.id) return;
