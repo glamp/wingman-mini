@@ -1,7 +1,7 @@
 // The in-page capture/report UI, rendered inside a Shadow DOM root (style-isolated).
 // Talks to Trello directly (CORS-friendly) and proxies Groq through the background.
 (function () {
-  const { storage, markdown, trello, capture } = globalThis.Wingman;
+  const { storage, markdown, trello, capture, r2 } = globalThis.Wingman;
 
   const MARKUP = `
     <div class="wm-backdrop">
@@ -489,21 +489,36 @@
 
       const card = await trello.createCard(auth, { listId: settings.listId, name, desc, labelIds });
 
+      // Each attachment goes to Trello, or to R2 fallback storage if it's too large.
+      const r2Links = [];
+      const attach = async (blob, filename) => {
+        const result = await r2.uploadAttachment(auth, card.id, blob, filename, settings);
+        if (result.via === "r2") r2Links.push(result);
+      };
+
       if (state.mode === "recording") {
         const blobs = state.videoBlobs;
         if (blobs.length === 1) {
-          await trello.attachToCard(auth, card.id, blobs[0], "recording.webm");
+          await attach(blobs[0], "recording.webm");
         } else {
           for (let i = 0; i < blobs.length; i++) {
-            await trello.attachToCard(auth, card.id, blobs[i], `recording-${i + 1}.webm`);
+            await attach(blobs[i], `recording-${i + 1}.webm`);
           }
         }
-        if (state.posterBlob) await trello.attachToCard(auth, card.id, state.posterBlob, "poster.png");
+        if (state.posterBlob) await attach(state.posterBlob, "poster.png");
       } else {
         const blob = state.cropRect
           ? await capture.cropDataUrl(state.screenshot, state.cropRect)
           : capture.dataUrlToBlob(state.screenshot);
-        await trello.attachToCard(auth, card.id, blob, "screenshot.png");
+        await attach(blob, "screenshot.png");
+      }
+
+      // For anything stored in R2, also surface the link in the card description.
+      if (r2Links.length) {
+        const lines = r2Links.map((l) => `📎 [${l.filename}](${l.url})`).join("\n");
+        await trello
+          .updateCardDesc(auth, card.id, `${desc}\n\n## Media\n${lines}`)
+          .catch(() => {}); // the URL attachments are already on the card; don't fail the submit
       }
 
       const link = document.createElement("a");

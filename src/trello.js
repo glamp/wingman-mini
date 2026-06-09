@@ -97,11 +97,31 @@
     if (res.status === 401) throw new Error("Invalid Trello credentials.");
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(
+      const err = new Error(
         `Failed to attach "${filename}" (HTTP ${res.status}). ${text}`.trim()
       );
+      err.status = res.status; // so callers can detect 413 (too large) and fall back to R2
+      throw err;
     }
     return res.json();
+  }
+
+  // POST /cards/{id}/attachments with a `url` — attaches a link (e.g. an R2-hosted
+  // file) instead of uploading bytes. Used for files too large for Trello.
+  async function attachUrlToCard(auth, cardId, linkUrl, name) {
+    requireAuth(auth);
+    const res = await fetch(
+      url(`/cards/${cardId}/attachments`, auth, { url: linkUrl, name: name || "" }),
+      { method: "POST" }
+    );
+    return getJson(res, `Failed to attach link "${name || linkUrl}" to the card`);
+  }
+
+  // PUT /cards/{id} — update the card description (used to append R2 media links).
+  async function updateCardDesc(auth, cardId, desc) {
+    requireAuth(auth);
+    const res = await fetch(url(`/cards/${cardId}`, auth, { desc }), { method: "PUT" });
+    return getJson(res, "Failed to update the card description");
   }
 
   globalThis.Wingman = globalThis.Wingman || {};
@@ -112,5 +132,7 @@
     resolveLabelIds,
     createCard,
     attachToCard,
+    attachUrlToCard,
+    updateCardDesc,
   };
 })();

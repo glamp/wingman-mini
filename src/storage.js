@@ -12,6 +12,9 @@
     listName: "",
     defaultLabels: "", // comma-separated label names
     groqApiKey: "", // for voice transcription + form auto-fill
+    // Cloudflare Worker (R2) fallback for files too large for Trello's 10 MB limit.
+    r2UploadUrl: "https://wingman-files.lamp-greg.workers.dev/upload",
+    r2UploadToken: "b67d73ec257da9774b56795f96976569",
   };
 
   async function getSettings() {

@@ -61,6 +61,23 @@
       </section>
 
       <section>
+        <h2>Large file storage (Cloudflare R2)</h2>
+        <label class="wm-field">
+          <span class="wm-label">Worker upload URL</span>
+          <input id="r2UploadUrl" class="wm-input" type="text" autocomplete="off" placeholder="https://your-worker.workers.dev/upload" />
+        </label>
+        <label class="wm-field">
+          <span class="wm-label">Upload token</span>
+          <input id="r2UploadToken" class="wm-input" type="password" autocomplete="off" placeholder="Your R2 upload token" />
+        </label>
+        <p class="wm-help">
+          Files of 9.5 MB or larger (over Trello's 10 MB attachment limit) are uploaded here
+          instead, and the card links to the hosted file. Leave the defaults to use the shared
+          Wingman storage.
+        </p>
+      </section>
+
+      <section>
         <h2>Report defaults</h2>
         <label class="wm-field">
           <span class="wm-label">Reporter name</span>

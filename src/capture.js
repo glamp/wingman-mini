@@ -74,13 +74,12 @@
     };
   }
 
-  // Roll a new video file before this many bytes so no single attachment trips Trello's
-  // 10 MB (10 * 1024 * 1024) attachment limit. We leave a generous margin on purpose:
-  // a segment can overshoot the threshold by a full timeslice, and VP9 frequently exceeds
-  // the requested videoBitsPerSecond on busy/high-motion screens (it's a target, not a hard
-  // cap), so the overshoot can be far larger than the bitrate alone predicts. Add multipart
-  // form overhead on top. 8 MiB keeps the finished file comfortably under 10 MB.
-  const SEGMENT_LIMIT = 8 * 1024 * 1024;
+  // Recordings are no longer split: large files now go to R2 fallback storage as a single
+  // file (see r2.js), so there's no need to keep each segment under Trello's 10 MB limit.
+  // Infinity means the size-based roll below never fires and the recorder produces one
+  // continuous, independently-playable webm. (The segment-rolling machinery is kept intact
+  // in case we ever want to re-enable splitting.)
+  const SEGMENT_LIMIT = Infinity;
   // ~2 Mbps ceiling — crisp text for screen content. The encoder spends fewer bits when the
   // screen is static, so typical recordings come in well under this. The one quality lever.
   const VIDEO_BPS = 2_000_000;

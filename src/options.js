@@ -10,6 +10,8 @@
     reporterName: $("reporterName"),
     defaultLabels: $("defaultLabels"),
     groqApiKey: $("groqApiKey"),
+    r2UploadUrl: $("r2UploadUrl"),
+    r2UploadToken: $("r2UploadToken"),
     board: $("board"),
     list: $("list"),
     testBtn: $("testBtn"),
@@ -44,6 +46,8 @@
     els.reporterName.value = saved.reporterName;
     els.defaultLabels.value = saved.defaultLabels;
     els.groqApiKey.value = saved.groqApiKey;
+    els.r2UploadUrl.value = saved.r2UploadUrl;
+    els.r2UploadToken.value = saved.r2UploadToken;
 
     // If we already have credentials, populate the dropdowns and re-select.
     if (saved.apiKey && saved.token) {
@@ -101,6 +105,8 @@
         reporterName: els.reporterName.value.trim(),
         defaultLabels: els.defaultLabels.value.trim(),
         groqApiKey: els.groqApiKey.value.trim(),
+        r2UploadUrl: els.r2UploadUrl.value.trim(),
+        r2UploadToken: els.r2UploadToken.value.trim(),
         boardId: els.board.value,
         boardName: els.board.value ? boardName : "",
         listId: els.list.value,
