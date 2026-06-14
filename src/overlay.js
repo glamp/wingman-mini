@@ -123,7 +123,7 @@
 
   let state = null;
 
-  function mount(host, root, screenshot, css) {
+  function mount(host, root, screenshot, css, consoleLogs = []) {
     root.innerHTML = `<style>${css}</style>` + MARKUP;
     const $ = (id) => root.getElementById(id);
 
@@ -140,6 +140,7 @@
       posterBlob: null,
       audioBlob: null,
       transcript: "",
+      consoleLogs: Array.isArray(consoleLogs) ? consoleLogs : [],
       stopBar: null,
       onMove: null,
       onUp: null,
@@ -511,6 +512,14 @@
           ? await capture.cropDataUrl(state.screenshot, state.cropRect)
           : capture.dataUrlToBlob(state.screenshot);
         await attach(blob, "screenshot.png");
+      }
+
+      // Attach the page's buffered console output (logs + uncaught errors) for the dev.
+      if (state.consoleLogs.length) {
+        const text = state.consoleLogs
+          .map((l) => `[${l.time}] ${String(l.level).toUpperCase().padEnd(9)} ${l.text}`)
+          .join("\n");
+        await attach(new Blob([text], { type: "text/plain" }), "console-logs.txt");
       }
 
       // For anything stored in R2, also surface the link in the card description.

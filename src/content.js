@@ -40,12 +40,47 @@
         .catch(() => "");
     }
 
+    const consoleLogs = await getConsoleLogs();
+
     const host = document.createElement("div");
     host.id = HOST_ID;
     host.style.cssText = "all: initial; position: fixed; inset: 0; z-index: 2147483647;";
     const root = host.attachShadow({ mode: "open" });
     document.documentElement.append(host);
 
-    globalThis.Wingman.overlay.mount(host, root, res.screenshot, cssText);
+    globalThis.Wingman.overlay.mount(host, root, res.screenshot, cssText, consoleLogs);
+  }
+
+  // Ask the MAIN-world console-capture script for its buffered logs. It lives in the page's
+  // own JS world (separate globals), so we talk to it over window.postMessage. Resolve to []
+  // on timeout so a missing/older capture script never blocks the overlay.
+  function getConsoleLogs() {
+    return new Promise((resolve) => {
+      const nonce = `${Date.now()}-${Math.random()}`;
+      let done = false;
+      const finish = (logs) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener("message", onMessage);
+        resolve(logs);
+      };
+      const onMessage = (e) => {
+        const d = e.data;
+        // Match on source/type/nonce rather than e.source === window: the reply comes from
+        // the page's MAIN world, whose WindowProxy isn't reliably === this isolated world's
+        // `window`. The unique nonce is what actually correlates request and response.
+        if (
+          d &&
+          d.source === "wingman" &&
+          d.type === "WM_LOGS_RESPONSE" &&
+          d.nonce === nonce
+        ) {
+          finish(Array.isArray(d.logs) ? d.logs : []);
+        }
+      };
+      window.addEventListener("message", onMessage);
+      window.postMessage({ source: "wingman", type: "WM_LOGS_REQUEST", nonce }, "*");
+      setTimeout(() => finish([]), 500);
+    });
   }
 })();

@@ -11,8 +11,9 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 // Read straight from manifest.json so the globalThis.Wingman.* dependency chain loads
 // correctly (and in the same order) when we inject programmatically. Deriving it here
-// instead of keeping a second hand-maintained copy means the two can never drift.
-const CONTENT_SCRIPTS = chrome.runtime.getManifest().content_scripts[0].js;
+// instead of keeping a second hand-maintained copy means the two can never drift. Each entry
+// carries its own world (the console-capture entry runs in MAIN, the rest in ISOLATED).
+const CONTENT_SCRIPT_ENTRIES = chrome.runtime.getManifest().content_scripts;
 
 async function activate(tab) {
   if (!tab || !tab.id) return;
@@ -27,10 +28,16 @@ async function activate(tab) {
     // scripts on demand, then retry. Trying sendMessage first means already-injected tabs
     // never get a second copy of the listeners/overlay.
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: CONTENT_SCRIPTS,
-      });
+      // Inject each manifest entry into its declared world. Note: because this runs after the
+      // page already loaded, the MAIN-world console capture only buffers logs from here on —
+      // predate-install tabs have no history. Normal (declaratively-injected) tabs are fine.
+      for (const entry of CONTENT_SCRIPT_ENTRIES) {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: entry.js,
+          world: entry.world || "ISOLATED",
+        });
+      }
       await chrome.tabs.sendMessage(tab.id, { type: "WM_ACTIVATE" });
     } catch (injectErr) {
       notify("Wingman couldn't start on this page. Try reloading and clicking again.");
