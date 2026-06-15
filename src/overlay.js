@@ -1,7 +1,7 @@
 // The in-page capture/report UI, rendered inside a Shadow DOM root (style-isolated).
 // Talks to Trello directly (CORS-friendly) and proxies Groq through the background.
 (function () {
-  const { storage, markdown, trello, capture, r2 } = globalThis.Wingman;
+  const { storage, markdown, trello, capture, r2, draw } = globalThis.Wingman;
 
   const MARKUP = `
     <div class="wm-backdrop">
@@ -35,6 +35,13 @@
               <div class="wm-shot">
                 <img id="shotImg" class="wm-shotimg" alt="screenshot" />
                 <div id="sel" class="wm-sel" hidden></div>
+                <canvas id="drawCanvas" class="wm-draw" hidden></canvas>
+              </div>
+              <div class="wm-marktools">
+                <button id="toolCrop" class="wm-marktool is-active" type="button">&#9986;&#65039; Crop</button>
+                <button id="toolPen" class="wm-marktool" type="button">&#9999;&#65039; Draw</button>
+                <span id="swatches" class="wm-swatches"></span>
+                <button id="toolClear" class="wm-marktool" type="button">&#129533; Clear</button>
               </div>
               <div class="wm-shotbar">
                 <span id="shotHint" class="wm-hint">Drag on the image to crop.</span>
@@ -133,7 +140,10 @@
       $,
       screenshot,
       mode: "screenshot",
+      tool: "crop",
       cropRect: null,
+      drawSurface: null,
+      drawOverlay: null,
       recorder: null,
       micRecorder: null,
       videoBlobs: [],
@@ -175,6 +185,7 @@
     if (state.onMove) window.removeEventListener("mousemove", state.onMove);
     if (state.onUp) window.removeEventListener("mouseup", state.onUp);
     removeStopBar();
+    removeDrawOverlay();
     state.host.remove();
     state = null;
   }
@@ -195,6 +206,7 @@
     $("shotImg").src = state.screenshot;
     wireTabs();
     wireCrop();
+    wireDraw();
     wireRecording();
     wireMic();
     $("submit").addEventListener("click", submit);
@@ -276,6 +288,70 @@
     });
   }
 
+  // ---- screenshot markup (draw on the preview, baked into the PNG on submit) ----
+  function wireDraw() {
+    const { $ } = state;
+    const img = $("shotImg");
+    const canvas = $("drawCanvas");
+
+    // Size the canvas backing store to the screenshot's real pixels so the baked-in markup
+    // is crisp; CSS stretches it over the (smaller) preview, and draw.js maps coordinates.
+    const setup = () => {
+      if (!img.naturalWidth || state.drawSurface) return;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      state.drawSurface = draw.createSurface(canvas, { color: draw.PALETTE[0] });
+    };
+    if (img.complete && img.naturalWidth) setup();
+    else img.addEventListener("load", setup, { once: true });
+
+    // Color swatches — single source of truth is draw.PALETTE.
+    const swatches = $("swatches");
+    draw.PALETTE.forEach((color, i) => {
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.className = "wm-swatch" + (i === 0 ? " is-active" : "");
+      sw.style.background = color;
+      sw.addEventListener("click", () => {
+        swatches
+          .querySelectorAll(".wm-swatch")
+          .forEach((s) => s.classList.remove("is-active"));
+        sw.classList.add("is-active");
+        if (state.drawSurface) state.drawSurface.setColor(color);
+        setDrawTool("pen");
+      });
+      swatches.append(sw);
+    });
+
+    $("toolCrop").addEventListener("click", () => setDrawTool("crop"));
+    $("toolPen").addEventListener("click", () => setDrawTool("pen"));
+    $("toolClear").addEventListener("click", () => {
+      if (state.drawSurface) state.drawSurface.clear();
+    });
+
+    setDrawTool("crop");
+  }
+
+  function setDrawTool(tool) {
+    const { $ } = state;
+    state.tool = tool;
+    const canvas = $("drawCanvas");
+    canvas.hidden = false;
+    // Crop: canvas is inert so the image's crop drag (wireCrop) works. Pen: the canvas
+    // sits above the image and intercepts pointer events for drawing.
+    canvas.style.pointerEvents = tool === "crop" ? "none" : "auto";
+    $("toolCrop").classList.toggle("is-active", tool === "crop");
+    $("toolPen").classList.toggle("is-active", tool === "pen");
+    const hint = $("shotHint");
+    if (tool === "crop") {
+      hint.textContent = state.cropRect
+        ? "Cropped region selected."
+        : "Drag on the image to crop.";
+    } else {
+      hint.textContent = "Draw on the screenshot to highlight.";
+    }
+  }
+
   // ---- screen recording (with mic narration) ----
   function wireRecording() {
     const { $ } = state;
@@ -293,9 +369,11 @@
     try {
       const rec = await capture.startRecording({ onEnded: stopRec });
       state.recorder = rec;
-      // Hide the overlay so it isn't in the recording; show a floating stop bar.
+      // Hide the overlay so it isn't in the recording; show a floating stop bar plus the
+      // live-page markup overlay (captured straight into the video).
       state.host.style.display = "none";
       showStopBar();
+      await showDrawOverlay();
     } catch (err) {
       showMsg(err.message, "error");
     }
@@ -304,6 +382,7 @@
   async function stopRec() {
     if (!state || !state.recorder) return;
     removeStopBar();
+    removeDrawOverlay();
     const { $ } = state;
     const rec = state.recorder;
     state.recorder = null;
@@ -352,6 +431,113 @@
     if (state && state.stopBar) {
       state.stopBar.remove();
       state.stopBar = null;
+    }
+  }
+
+  // Live-page markup during recording. A transparent full-viewport canvas plus a floating
+  // tool palette, both in the light DOM (like the stop bar) so they survive the host being
+  // hidden. getDisplayMedia captures the strokes straight into the video — as long as the
+  // user is sharing the tab/window/screen that shows this page. The canvas only intercepts
+  // pointer events while "Draw" is on, so the user can otherwise click/scroll/demo freely.
+  async function showDrawOverlay() {
+    removeDrawOverlay();
+    // Remember the pen mode the user last chose (defaults to permanent).
+    const { drawMode } = await storage.getSettings();
+    let vanishing = drawMode === "vanishing";
+    if (!state || state.recorder === null) return; // bailed/stopped while awaiting
+    const dpr = window.devicePixelRatio || 1;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(window.innerWidth * dpr);
+    canvas.height = Math.round(window.innerHeight * dpr);
+    canvas.style.cssText =
+      "position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none;";
+    document.body.append(canvas);
+
+    const surface = draw.createSurface(canvas, {
+      color: draw.PALETTE[0],
+      penWidth: Math.max(3, Math.round(3 * dpr)),
+      fade: vanishing,
+    });
+
+    const bar = document.createElement("div");
+    bar.style.cssText =
+      "position:fixed;z-index:2147483647;bottom:60px;left:50%;transform:translateX(-50%);" +
+      "background:#1e293b;padding:6px 10px;border-radius:100px;display:flex;gap:6px;" +
+      "align-items:center;box-shadow:0 8px 25px rgba(0,0,0,.35);" +
+      "font:600 12px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;";
+
+    const BTN =
+      "background:#334155;color:#fff;border:0;border-radius:100px;padding:4px 10px;" +
+      "font:inherit;cursor:pointer;line-height:1.4;";
+    const mkBtn = (label) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.style.cssText = BTN;
+      return b;
+    };
+    const setActive = (b, on) => {
+      b.style.background = on ? "#3b82f6" : "#334155";
+    };
+
+    let annotate = false;
+    const drawBtn = mkBtn("✏️ Draw");
+    const vanishBtn = mkBtn("🪄 Vanishing");
+    const clearBtn = mkBtn("🧽 Clear");
+
+    const setAnnotate = (on) => {
+      annotate = on;
+      canvas.style.pointerEvents = on ? "auto" : "none";
+      setActive(drawBtn, on);
+      drawBtn.textContent = on ? "✓ Done" : "✏️ Draw";
+    };
+
+    // Vanishing pen: each stroke holds, then fades on its own clock. Remember the choice.
+    const setVanishing = (on, persist) => {
+      vanishing = on;
+      surface.setFade(on);
+      setActive(vanishBtn, on);
+      if (persist) storage.saveSettings({ drawMode: on ? "vanishing" : "permanent" });
+    };
+
+    drawBtn.onclick = () => setAnnotate(!annotate);
+    vanishBtn.onclick = () => setVanishing(!vanishing, true);
+    clearBtn.onclick = () => surface.clear();
+
+    setActive(vanishBtn, vanishing);
+    bar.append(drawBtn, vanishBtn);
+    draw.PALETTE.forEach((color, i) => {
+      const sw = document.createElement("button");
+      sw.type = "button";
+      sw.style.cssText =
+        "width:16px;height:16px;padding:0;border-radius:50%;cursor:pointer;background:" +
+        color +
+        ";border:2px solid " +
+        (i === 0 ? "#fff" : "transparent") + ";";
+      sw.onclick = () => {
+        bar
+          .querySelectorAll("[data-swatch]")
+          .forEach((s) => (s.style.borderColor = "transparent"));
+        sw.style.borderColor = "#fff";
+        surface.setColor(color);
+        if (!annotate) setAnnotate(true);
+      };
+      sw.setAttribute("data-swatch", "1");
+      bar.append(sw);
+    });
+    bar.append(clearBtn);
+
+    document.body.append(bar);
+    state.drawOverlay = { canvas, bar, surface };
+  }
+
+  function removeDrawOverlay() {
+    if (state && state.drawOverlay) {
+      state.drawOverlay.surface.destroy();
+      state.drawOverlay.canvas.remove();
+      state.drawOverlay.bar.remove();
+      state.drawOverlay = null;
     }
   }
 
@@ -508,9 +694,20 @@
         }
         if (state.posterBlob) await attach(state.posterBlob, "poster.png");
       } else {
-        const blob = state.cropRect
-          ? await capture.cropDataUrl(state.screenshot, state.cropRect)
-          : capture.dataUrlToBlob(state.screenshot);
+        const hasMarkup = state.drawSurface && !state.drawSurface.isEmpty();
+        let blob;
+        if (hasMarkup) {
+          // Bake the drawn markup (and any crop) into the PNG.
+          blob = await capture.compositeScreenshot(
+            state.screenshot,
+            $("drawCanvas"),
+            state.cropRect
+          );
+        } else if (state.cropRect) {
+          blob = await capture.cropDataUrl(state.screenshot, state.cropRect);
+        } else {
+          blob = capture.dataUrlToBlob(state.screenshot);
+        }
         await attach(blob, "screenshot.png");
       }
 

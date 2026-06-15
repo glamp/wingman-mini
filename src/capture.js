@@ -286,12 +286,59 @@
     });
   }
 
+  // Bake markup onto a screenshot. Draws the full-resolution screenshot, overlays the
+  // markup canvas scaled to natural size, then optionally crops (rect is in screenshot
+  // pixels, same as cropDataUrl). Returns a PNG Blob.
+  function compositeScreenshot(dataUrl, markupCanvas, cropRect) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const full = document.createElement("canvas");
+        full.width = img.naturalWidth;
+        full.height = img.naturalHeight;
+        const fctx = full.getContext("2d");
+        fctx.drawImage(img, 0, 0);
+        if (markupCanvas) {
+          fctx.drawImage(markupCanvas, 0, 0, full.width, full.height);
+        }
+
+        let out = full;
+        if (cropRect) {
+          out = document.createElement("canvas");
+          out.width = Math.max(1, Math.round(cropRect.width));
+          out.height = Math.max(1, Math.round(cropRect.height));
+          out
+            .getContext("2d")
+            .drawImage(
+              full,
+              cropRect.x,
+              cropRect.y,
+              cropRect.width,
+              cropRect.height,
+              0,
+              0,
+              out.width,
+              out.height
+            );
+        }
+
+        out.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Could not export the marked-up screenshot."));
+        }, "image/png");
+      };
+      img.onerror = () => reject(new Error("Could not load the screenshot."));
+      img.src = dataUrl;
+    });
+  }
+
   globalThis.Wingman = globalThis.Wingman || {};
   globalThis.Wingman.capture = {
     startRecording,
     recordMic,
     posterFromVideoBlob,
     cropDataUrl,
+    compositeScreenshot,
     dataUrlToBlob,
     blobToBase64,
   };
