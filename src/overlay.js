@@ -27,11 +27,11 @@
 
           <div id="appContent">
             <div class="wm-tabs">
-              <button id="tabScreenshot" class="wm-tab is-active">Screenshot</button>
-              <button id="tabRecording" class="wm-tab">Screen recording</button>
+              <button id="tabScreenshot" class="wm-tab">Screenshot</button>
+              <button id="tabRecording" class="wm-tab is-active">Screen recording</button>
             </div>
 
-            <section id="screenshotSection">
+            <section id="screenshotSection" hidden>
               <div class="wm-shot">
                 <img id="shotImg" class="wm-shotimg" alt="screenshot" />
                 <div id="sel" class="wm-sel" hidden></div>
@@ -53,7 +53,7 @@
               </div>
             </section>
 
-            <section id="recordingSection" hidden>
+            <section id="recordingSection">
               <div id="recordIdle">
                 <p class="wm-hint">
                   Pick a tab, window, or screen and narrate as you go. We'll record your mic
@@ -139,7 +139,7 @@
       root,
       $,
       screenshot,
-      mode: "screenshot",
+      mode: "recording",
       tool: "crop",
       cropRect: null,
       drawSurface: null,
