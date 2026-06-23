@@ -152,6 +152,13 @@
       });
       const chunks = [];
       let bytes = 0;
+      let startedAt = 0;
+      // MediaRecorder never writes the recording's total Duration into the webm header, so
+      // players can't seek (no scrub bar). We measure wall-clock length here and patch the
+      // blob below so the saved file becomes seekable.
+      r.onstart = () => {
+        startedAt = performance.now();
+      };
       r.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           chunks.push(e.data);
@@ -163,8 +170,18 @@
           r.stop();
         }
       };
-      r.onstop = () => {
-        if (chunks.length) videoBlobs.push(new Blob(chunks, { type: videoMime }));
+      r.onstop = async () => {
+        if (chunks.length) {
+          let blob = new Blob(chunks, { type: videoMime });
+          try {
+            // Inject the real Duration so the seek bar works. Falls back to the unpatched
+            // blob on any failure — a non-seekable file still plays.
+            blob = await globalThis.Wingman.fixWebmDuration(blob, performance.now() - startedAt);
+          } catch (e) {
+            /* keep the unpatched blob */
+          }
+          videoBlobs.push(blob);
+        }
         if (rolling) {
           rolling = false;
           videoRecorder = makeSegmentRecorder();
