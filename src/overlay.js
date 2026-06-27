@@ -1,7 +1,12 @@
 // The in-page capture/report UI, rendered inside a Shadow DOM root (style-isolated).
-// Talks to Trello directly (CORS-friendly) and proxies Groq through the background.
+// Talks to Trello directly for screenshots (CORS-friendly) and proxies Groq through the
+// background. Screen recording lives in an offscreen document (so it survives page reloads)
+// and is driven through the service worker; this file just shows the panel + the floating
+// recording controls and re-attaches them when the page reloads mid-recording.
 (function () {
   const { storage, markdown, trello, capture, r2, draw } = globalThis.Wingman;
+
+  const HOST_ID = "wingman-host";
 
   const MARKUP = `
     <div class="wm-backdrop">
@@ -62,7 +67,7 @@
                 <button id="startRec" class="wm-btn">Start recording</button>
               </div>
               <div id="recordDone" hidden>
-                <video id="recVideo" class="wm-video" controls></video>
+                <img id="recPoster" class="wm-video" alt="recording preview" hidden />
                 <div class="wm-shotbar">
                   <span class="wm-hint">Recording ready to attach.</span>
                   <button id="recAgain" class="wm-link">Record again</button>
@@ -128,9 +133,37 @@
     </div>
   `;
 
+  let cssText = null;
   let state = null;
+  // Floating recording controls (stop bar + live draw overlay). Kept separate from the panel
+  // `state` so they can be shown WITHOUT a mounted panel — that's what lets the content script
+  // re-attach them after the recorded page reloads (the panel is hidden during recording).
+  let recordingUI = null; // { stopBar, drawOverlay, onStop }
 
-  function mount(host, root, screenshot, css, consoleLogs = []) {
+  async function getCss() {
+    if (cssText == null) {
+      cssText = await fetch(chrome.runtime.getURL("src/styles.css"))
+        .then((r) => r.text())
+        .catch(() => "");
+    }
+    return cssText;
+  }
+
+  function makeHost() {
+    document.getElementById(HOST_ID)?.remove();
+    const host = document.createElement("div");
+    host.id = HOST_ID;
+    host.style.cssText = "all: initial; position: fixed; inset: 0; z-index: 2147483647;";
+    const root = host.attachShadow({ mode: "open" });
+    document.documentElement.append(host);
+    return { host, root };
+  }
+
+  // Mount the panel. `screenshot` is a data URL for the Screenshot tab (null when restored
+  // after a reload — the Screenshot tab is then hidden since we have no clean capture).
+  async function mountPanel({ screenshot = null, consoleLogs = [] } = {}) {
+    const css = await getCss();
+    const { host, root } = makeHost();
     root.innerHTML = `<style>${css}</style>` + MARKUP;
     const $ = (id) => root.getElementById(id);
 
@@ -143,15 +176,12 @@
       tool: "crop",
       cropRect: null,
       drawSurface: null,
-      drawOverlay: null,
-      recorder: null,
-      micRecorder: null,
-      videoBlobs: [],
-      posterBlob: null,
+      micRecorder: null, // screenshot-mode voice memo (stays in-page; short-lived)
       audioBlob: null,
       transcript: "",
+      segmentCount: 0, // > 0 once a recording is finished and pending submit
+      submitted: false,
       consoleLogs: Array.isArray(consoleLogs) ? consoleLogs : [],
-      stopBar: null,
       onMove: null,
       onUp: null,
     };
@@ -163,7 +193,8 @@
     });
     document.addEventListener("keydown", onKeydown, true);
 
-    init();
+    await init();
+    return state;
   }
 
   function onKeydown(e) {
@@ -184,8 +215,12 @@
     document.removeEventListener("keydown", onKeydown, true);
     if (state.onMove) window.removeEventListener("mousemove", state.onMove);
     if (state.onUp) window.removeEventListener("mouseup", state.onUp);
-    removeStopBar();
-    removeDrawOverlay();
+    // Abandon a finished-but-unsubmitted recording so it doesn't linger in the offscreen
+    // doc or pop back up on the next page load.
+    if (state.segmentCount && !state.submitted) {
+      chrome.runtime.sendMessage({ type: "WM_DISCARD_RECORDING" }).catch(() => {});
+    }
+    removeRecordingControls();
     state.host.remove();
     state = null;
   }
@@ -203,13 +238,19 @@
       return;
     }
 
-    $("shotImg").src = state.screenshot;
+    if (state.screenshot) {
+      $("shotImg").src = state.screenshot;
+    } else {
+      // No clean screenshot (panel restored after a reload) — hide the Screenshot tab.
+      $("tabScreenshot").hidden = true;
+    }
     wireTabs();
     wireCrop();
     wireDraw();
     wireRecording();
     wireMic();
     $("submit").addEventListener("click", submit);
+    setMode("recording");
   }
 
   // ---- tabs ----
@@ -352,61 +393,94 @@
     }
   }
 
-  // ---- screen recording (with mic narration) ----
+  // ---- screen recording (handled in the offscreen doc, driven via the service worker) ----
   function wireRecording() {
     const { $ } = state;
     $("startRec").addEventListener("click", startRec);
-    $("recAgain").addEventListener("click", () => {
-      state.videoBlobs = [];
-      state.posterBlob = null;
-      $("recordDone").hidden = true;
-      $("recordIdle").hidden = false;
-    });
+    $("recAgain").addEventListener("click", recordAgain);
   }
 
   async function startRec() {
-    const { $ } = state;
-    try {
-      const rec = await capture.startRecording({ onEnded: stopRec });
-      state.recorder = rec;
-      // Hide the overlay so it isn't in the recording; show a floating stop bar plus the
-      // live-page markup overlay (captured straight into the video).
-      state.host.style.display = "none";
-      showStopBar();
-      await showDrawOverlay();
-    } catch (err) {
-      showMsg(err.message, "error");
+    const res = await chrome.runtime
+      .sendMessage({ type: "WM_START_RECORDING" })
+      .catch(() => null);
+    if (!res || !res.ok) {
+      showMsg((res && res.error) || "Could not start recording.", "error");
+      return;
     }
+    // Hide the panel so it isn't in the recording; show the floating controls + draw overlay.
+    if (state) state.host.style.display = "none";
+    showRecordingControls({ onStop: stopRecording });
   }
 
-  async function stopRec() {
-    if (!state || !state.recorder) return;
+  async function recordAgain() {
+    await chrome.runtime.sendMessage({ type: "WM_DISCARD_RECORDING" }).catch(() => {});
+    if (!state) return;
+    state.segmentCount = 0;
+    state.transcript = "";
+    state.$("recordDone").hidden = true;
+    state.$("recordIdle").hidden = false;
+  }
+
+  // Stop the recording (from the stop bar, the panel, or a restored session) and flip the
+  // panel into its "recording ready" review state. Safe to call without a mounted panel —
+  // it mounts one. Idempotent on the offscreen side.
+  async function stopRecording() {
+    removeRecordingControls();
+    const res = await chrome.runtime
+      .sendMessage({ type: "WM_STOP_RECORDING" })
+      .catch(() => null);
+    if (!res || !res.ok) {
+      if (state) {
+        state.host.style.display = "block";
+        showMsg((res && res.error) || "Could not stop recording.", "error");
+      }
+      return;
+    }
+    await showRecordingDone({ ...res, consoleLogs: state ? state.consoleLogs : [] });
+  }
+
+  // Show the panel in "recording ready" state given the small artifacts the offscreen doc
+  // produced (poster + mic audio, both base64). Mounts a fresh panel if none is open (the
+  // case after the recorded page reloaded and was then stopped).
+  async function showRecordingDone(payload) {
+    if (!state) {
+      await mountPanel({ consoleLogs: payload.consoleLogs || [] });
+    }
+    if (!state) return;
+    const { $ } = state;
+    state.host.style.display = "block";
+    setMode("recording");
+    state.segmentCount = payload.segmentCount || 1;
+    if (payload.posterBase64) {
+      $("recPoster").src = `data:${payload.posterType || "image/png"};base64,${payload.posterBase64}`;
+      $("recPoster").hidden = false;
+    }
+    $("recordIdle").hidden = true;
+    $("recordDone").hidden = false;
+    if (payload.audioBase64) transcribeAndFillBase64(payload.audioBase64, payload.audioType);
+    else voiceStatus("No microphone audio captured — fill the form manually.", "info");
+  }
+
+  // ---- floating recording controls (light DOM, panel-independent) ----
+  function showRecordingControls(opts = {}) {
+    removeRecordingControls();
+    recordingUI = { stopBar: null, drawOverlay: null, onStop: opts.onStop || stopRecording };
+    showStopBar();
+    showDrawOverlay();
+  }
+
+  function removeRecordingControls() {
     removeStopBar();
     removeDrawOverlay();
-    const { $ } = state;
-    const rec = state.recorder;
-    state.recorder = null;
-    state.host.style.display = "block";
-    try {
-      const { videoBlobs, audioBlob } = await rec.stop();
-      state.videoBlobs = videoBlobs;
-      state.audioBlob = audioBlob;
-      // Poster + preview use the first segment.
-      state.posterBlob = await capture.posterFromVideoBlob(videoBlobs[0]).catch(() => null);
-      $("recVideo").src = URL.createObjectURL(videoBlobs[0]);
-      $("recordIdle").hidden = true;
-      $("recordDone").hidden = false;
-      if (audioBlob) transcribeAndFill(audioBlob);
-      else voiceStatus("No microphone audio captured — fill the form manually.", "info");
-    } catch (err) {
-      showMsg(err.message, "error");
-    }
+    recordingUI = null;
   }
 
-  // Floating stop control lives OUTSIDE the shadow host so hiding the host (to keep the
-  // overlay out of the recording) doesn't hide the stop button too.
+  // Floating stop control. Lives in the light DOM (not the shadow host) so it stays visible
+  // while the host is hidden, and so it can exist with no panel mounted at all.
   function showStopBar() {
     removeStopBar();
+    if (!recordingUI) return;
     const bar = document.createElement("div");
     bar.style.cssText =
       "position:fixed;z-index:2147483647;bottom:16px;left:50%;transform:translateX(-50%);" +
@@ -421,30 +495,33 @@
     btn.textContent = "Stop";
     btn.style.cssText =
       "background:#ef4444;color:#fff;border:0;border-radius:100px;padding:5px 12px;font:inherit;cursor:pointer;";
-    btn.onclick = stopRec;
+    btn.onclick = () => {
+      if (recordingUI && recordingUI.onStop) recordingUI.onStop();
+    };
     bar.append(dot, label, btn);
     document.body.append(bar);
-    state.stopBar = bar;
+    recordingUI.stopBar = bar;
   }
 
   function removeStopBar() {
-    if (state && state.stopBar) {
-      state.stopBar.remove();
-      state.stopBar = null;
+    if (recordingUI && recordingUI.stopBar) {
+      recordingUI.stopBar.remove();
+      recordingUI.stopBar = null;
     }
   }
 
   // Live-page markup during recording. A transparent full-viewport canvas plus a floating
   // tool palette, both in the light DOM (like the stop bar) so they survive the host being
-  // hidden. getDisplayMedia captures the strokes straight into the video — as long as the
-  // user is sharing the tab/window/screen that shows this page. The canvas only intercepts
-  // pointer events while "Draw" is on, so the user can otherwise click/scroll/demo freely.
+  // hidden and a page reload re-creating them. getDisplayMedia captures the strokes straight
+  // into the video — as long as the user is sharing the tab/window/screen that shows this
+  // page. The canvas only intercepts pointer events while "Draw" is on, so the user can
+  // otherwise click/scroll/demo freely.
   async function showDrawOverlay() {
     removeDrawOverlay();
     // Remember the pen mode the user last chose (defaults to permanent).
     const { drawMode } = await storage.getSettings();
     let vanishing = drawMode === "vanishing";
-    if (!state || state.recorder === null) return; // bailed/stopped while awaiting
+    if (!recordingUI) return; // stopped while awaiting settings
     const dpr = window.devicePixelRatio || 1;
 
     const canvas = document.createElement("canvas");
@@ -529,15 +606,15 @@
     bar.append(clearBtn);
 
     document.body.append(bar);
-    state.drawOverlay = { canvas, bar, surface };
+    recordingUI.drawOverlay = { canvas, bar, surface };
   }
 
   function removeDrawOverlay() {
-    if (state && state.drawOverlay) {
-      state.drawOverlay.surface.destroy();
-      state.drawOverlay.canvas.remove();
-      state.drawOverlay.bar.remove();
-      state.drawOverlay = null;
+    if (recordingUI && recordingUI.drawOverlay) {
+      recordingUI.drawOverlay.surface.destroy();
+      recordingUI.drawOverlay.canvas.remove();
+      recordingUI.drawOverlay.bar.remove();
+      recordingUI.drawOverlay = null;
     }
   }
 
@@ -569,14 +646,19 @@
   // ---- transcription + auto-fill (Groq via background) ----
   async function transcribeAndFill(audioBlob) {
     if (!audioBlob) return;
+    const audioBase64 = await capture.blobToBase64(audioBlob);
+    return transcribeAndFillBase64(audioBase64, audioBlob.type);
+  }
+
+  async function transcribeAndFillBase64(audioBase64, mime) {
+    if (!state) return;
     const { $ } = state;
     try {
       voiceStatus("Transcribing…", "info");
-      const audioBase64 = await capture.blobToBase64(audioBlob);
       const tRes = await chrome.runtime.sendMessage({
         type: "WM_TRANSCRIBE",
         audioBase64,
-        mime: audioBlob.type,
+        mime,
       });
       if (!tRes || !tRes.ok) throw new Error((tRes && tRes.error) || "Transcription failed.");
 
@@ -626,12 +708,45 @@
     };
   }
 
+  function pageContext(settings) {
+    return {
+      url: location.href,
+      pageTitle: document.title,
+      userAgent: navigator.userAgent,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      timestamp: new Date().toISOString(),
+      reporterName: settings.reporterName,
+    };
+  }
+
+  function consoleLogsText() {
+    if (!state.consoleLogs.length) return "";
+    return state.consoleLogs
+      .map((l) => `[${l.time}] ${String(l.level).toUpperCase().padEnd(9)} ${l.text}`)
+      .join("\n");
+  }
+
   function showMsg(text, kind, node) {
     const m = state.$("msg");
     m.hidden = false;
     m.className = "wm-msg wm-msg-" + (kind || "info");
     m.textContent = "";
     m.append(node || document.createTextNode(text));
+  }
+
+  function showCardCreated(shortUrl) {
+    const { $ } = state;
+    const link = document.createElement("a");
+    link.href = shortUrl;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.className = "wm-link";
+    link.textContent = "Open the Trello card →";
+    const wrap = document.createElement("span");
+    wrap.append("Card created. ", link);
+    showMsg(null, "success", wrap);
+    $("submit").textContent = "Done";
   }
 
   async function submit() {
@@ -644,99 +759,86 @@
     if (!auth.apiKey) return showMsg("Missing Trello API key. Open Wingman options.", "error");
     if (!auth.token) return showMsg("Missing Trello token. Open Wingman options.", "error");
     if (!settings.listId) return showMsg("No Trello list selected. Open Wingman options.", "error");
-    if (state.mode === "recording" && !state.videoBlobs.length) {
-      return showMsg("Record a video first, or switch to Screenshot.", "error");
-    }
 
+    if (state.mode === "recording") {
+      if (!state.segmentCount) {
+        return showMsg("Record a video first, or switch to Screenshot.", "error");
+      }
+      return submitRecording(fields, settings);
+    }
+    return submitScreenshot(fields, auth, settings);
+  }
+
+  // Recording: the blobs live in the offscreen doc, so the create+attach happens there.
+  // We just hand over the form fields, page context, transcript, and console text.
+  async function submitRecording(fields, settings) {
+    const { $ } = state;
     $("submit").disabled = true;
     showMsg("Creating card…", "info");
+    const res = await chrome.runtime
+      .sendMessage({
+        type: "WM_SUBMIT_RECORDING",
+        payload: {
+          fields,
+          context: pageContext(settings),
+          transcript: state.transcript,
+          consoleText: consoleLogsText(),
+        },
+      })
+      .catch(() => null);
+    if (!res || !res.ok) {
+      $("submit").disabled = false;
+      return showMsg((res && res.error) || "Something went wrong.", "error");
+    }
+    state.submitted = true;
+    showCardCreated(res.shortUrl);
+  }
 
+  // Screenshot: the PNG is produced and uploaded in-page (it never leaves this context).
+  async function submitScreenshot(fields, auth, settings) {
+    const { $ } = state;
+    $("submit").disabled = true;
+    showMsg("Creating card…", "info");
     try {
-      const context = {
-        url: location.href,
-        pageTitle: document.title,
-        userAgent: navigator.userAgent,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-        timestamp: new Date().toISOString(),
-        reporterName: settings.reporterName,
-      };
-
+      const context = pageContext(settings);
       const name = markdown.buildTitle(fields);
-      const desc = markdown.buildDescription(
-        fields,
-        context,
-        state.mode,
-        state.transcript,
-        state.videoBlobs.length
-      );
+      const desc = markdown.buildDescription(fields, context, "screenshot", state.transcript, 0);
       const labelIds = await trello
         .resolveLabelIds(auth, settings.boardId, settings.defaultLabels)
         .catch(() => []);
-
       const card = await trello.createCard(auth, { listId: settings.listId, name, desc, labelIds });
 
-      // Each attachment goes to Trello, or to R2 fallback storage if it's too large.
       const r2Links = [];
       const attach = async (blob, filename) => {
         const result = await r2.uploadAttachment(auth, card.id, blob, filename, settings);
         if (result.via === "r2") r2Links.push(result);
       };
 
-      if (state.mode === "recording") {
-        const blobs = state.videoBlobs;
-        if (blobs.length === 1) {
-          await attach(blobs[0], "recording.webm");
-        } else {
-          for (let i = 0; i < blobs.length; i++) {
-            await attach(blobs[i], `recording-${i + 1}.webm`);
-          }
-        }
-        if (state.posterBlob) await attach(state.posterBlob, "poster.png");
+      const hasMarkup = state.drawSurface && !state.drawSurface.isEmpty();
+      let blob;
+      if (hasMarkup) {
+        blob = await capture.compositeScreenshot(state.screenshot, $("drawCanvas"), state.cropRect);
+      } else if (state.cropRect) {
+        blob = await capture.cropDataUrl(state.screenshot, state.cropRect);
       } else {
-        const hasMarkup = state.drawSurface && !state.drawSurface.isEmpty();
-        let blob;
-        if (hasMarkup) {
-          // Bake the drawn markup (and any crop) into the PNG.
-          blob = await capture.compositeScreenshot(
-            state.screenshot,
-            $("drawCanvas"),
-            state.cropRect
-          );
-        } else if (state.cropRect) {
-          blob = await capture.cropDataUrl(state.screenshot, state.cropRect);
-        } else {
-          blob = capture.dataUrlToBlob(state.screenshot);
-        }
-        await attach(blob, "screenshot.png");
+        blob = capture.dataUrlToBlob(state.screenshot);
+      }
+      await attach(blob, "screenshot.png");
+
+      const consoleText = consoleLogsText();
+      if (consoleText) {
+        await attach(new Blob([consoleText], { type: "text/plain" }), "console-logs.txt");
       }
 
-      // Attach the page's buffered console output (logs + uncaught errors) for the dev.
-      if (state.consoleLogs.length) {
-        const text = state.consoleLogs
-          .map((l) => `[${l.time}] ${String(l.level).toUpperCase().padEnd(9)} ${l.text}`)
-          .join("\n");
-        await attach(new Blob([text], { type: "text/plain" }), "console-logs.txt");
-      }
-
-      // For anything stored in R2, also surface the link in the card description.
       if (r2Links.length) {
         const lines = r2Links.map((l) => `📎 [${l.filename}](${l.url})`).join("\n");
         await trello
           .updateCardDesc(auth, card.id, `${desc}\n\n## Media\n${lines}`)
-          .catch(() => {}); // the URL attachments are already on the card; don't fail the submit
+          .catch(() => {});
       }
 
-      const link = document.createElement("a");
-      link.href = card.shortUrl;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.className = "wm-link";
-      link.textContent = "Open the Trello card →";
-      const wrap = document.createElement("span");
-      wrap.append("Card created. ", link);
-      showMsg(null, "success", wrap);
-      $("submit").textContent = "Done";
+      state.submitted = true;
+      showCardCreated(card.shortUrl);
     } catch (err) {
       $("submit").disabled = false;
       showMsg(err.message || "Something went wrong.", "error");
@@ -744,5 +846,12 @@
   }
 
   globalThis.Wingman = globalThis.Wingman || {};
-  globalThis.Wingman.overlay = { mount, close };
+  globalThis.Wingman.overlay = {
+    mountPanel,
+    showRecordingControls,
+    removeRecordingControls,
+    showRecordingDone,
+    stopRecording,
+    close,
+  };
 })();

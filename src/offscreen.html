@@ -1,0 +1,21 @@
+<!doctype html>
+<!--
+  Offscreen document: the persistent home for screen recording. Living outside any tab,
+  it keeps the MediaRecorder + the captured blobs alive across page reloads of the
+  recorded tab. The service worker drives it; it owns the recording and the upload.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+  </head>
+  <body>
+    <!-- Shared libs the recorder + uploader reuse, in dependency order. -->
+    <script src="storage.js"></script>
+    <script src="markdown.js"></script>
+    <script src="trello.js"></script>
+    <script src="r2.js"></script>
+    <script src="webm-duration.js"></script>
+    <script src="capture.js"></script>
+    <script src="offscreen.js"></script>
+  </body>
+</html>
