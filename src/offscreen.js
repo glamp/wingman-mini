@@ -163,5 +163,20 @@
         .catch(() => sendResponse({ ok: true }));
       return true;
     }
+
+    // The service worker can't reliably query mic permission, but this offscreen document is
+    // a real DOM document and can. The SW uses this to decide whether to open the permission
+    // popup before starting (skip it when already granted).
+    if (msg.type === "WM_OFFSCREEN_MIC_STATE") {
+      (async () => {
+        try {
+          const status = await navigator.permissions.query({ name: "microphone" });
+          return { ok: true, state: status.state }; // "granted" | "prompt" | "denied"
+        } catch (e) {
+          return { ok: true, state: "prompt" }; // safe fallback: at worst we prompt once
+        }
+      })().then(sendResponse);
+      return true;
+    }
   });
 })();

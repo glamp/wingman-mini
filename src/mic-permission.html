@@ -1,0 +1,50 @@
+<!doctype html>
+<!--
+  Microphone permission page. The recorder lives in an offscreen document, which has no
+  UI and therefore can't show Chrome's mic permission prompt. This visible extension page
+  requests the mic so the grant lands on the extension origin; once granted, the offscreen
+  doc (same origin) can record the mic. The service worker opens this popup on the first
+  recording when permission isn't already granted. See background.js + offscreen.js.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Wingman — Microphone</title>
+    <style>
+      body {
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: #1a1a1a;
+        margin: 0;
+        padding: 24px;
+        background: #fff;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 12px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: #444;
+      }
+      #closeBtn {
+        display: none;
+        margin-top: 8px;
+        padding: 8px 16px;
+        font-size: 14px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        background: #f5f5f5;
+        cursor: pointer;
+      }
+      #closeBtn:hover {
+        background: #ebebeb;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🎙 Microphone access</h1>
+    <p id="status">Requesting microphone access…</p>
+    <button id="closeBtn" type="button">Close</button>
+    <script src="mic-permission.js"></script>
+  </body>
+</html>

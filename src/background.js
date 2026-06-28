@@ -37,6 +37,71 @@ async function closeOffscreen() {
   if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
 }
 
+// ---- microphone permission ----
+// The recorder's getUserMedia runs in the offscreen document, which has no UI and so can't
+// show Chrome's mic prompt. The permission must be granted to the extension origin from a
+// visible page first; the offscreen doc (same origin) then inherits it. We open that page
+// only when needed, and never block recording on the outcome — a denied mic just records
+// video-only (capture.js degrades gracefully).
+
+// Ask the offscreen doc for the current mic permission state (it can query; the SW can't).
+async function getMicPermissionState() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "WM_OFFSCREEN_MIC_STATE" });
+    return (res && res.state) || "prompt";
+  } catch (e) {
+    return "prompt";
+  }
+}
+
+// Open the permission popup and resolve once the user decides, closes it, or 2 min elapse.
+function openMicPermissionWindow() {
+  return new Promise((resolve) => {
+    let settled = false;
+    let createdWindowId = null;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      chrome.runtime.onMessage.removeListener(onMsg);
+      chrome.windows.onRemoved.removeListener(onRemoved);
+      clearTimeout(timer);
+      resolve(result); // "granted" | "denied" | "dismissed" | "timeout"
+    };
+    const onMsg = (m) => {
+      if (m && m.type === "WM_MIC_PERMISSION_RESULT") finish(m.granted ? "granted" : "denied");
+    };
+    const onRemoved = (winId) => {
+      if (winId === createdWindowId) finish("dismissed");
+    };
+    chrome.runtime.onMessage.addListener(onMsg);
+    chrome.windows.onRemoved.addListener(onRemoved);
+    timer = setTimeout(() => finish("timeout"), 120000);
+    chrome.windows.create(
+      {
+        url: chrome.runtime.getURL("src/mic-permission.html"),
+        type: "popup",
+        width: 440,
+        height: 340,
+        focused: true,
+      },
+      (win) => {
+        createdWindowId = win && win.id;
+      }
+    );
+  });
+}
+
+// Make sure the extension origin has mic permission before recording. Returns the resolved
+// state but callers ignore it — recording proceeds either way. Requires the offscreen doc to
+// already exist (so the state query works).
+async function ensureMicPermission() {
+  const state = await getMicPermissionState();
+  if (state === "granted") return "granted";
+  if (state === "denied") return "denied"; // re-opening won't re-prompt an origin-denied state
+  return await openMicPermissionWindow(); // state === "prompt"
+}
+
 async function getRec() {
   const out = await chrome.storage.local.get(REC_KEY);
   return out[REC_KEY] || null;
@@ -118,6 +183,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: false, error: "A recording is already in progress." };
       }
       await ensureOffscreen();
+      // Resolve mic permission before starting so the prompt and the screen-share picker
+      // never overlap. Result intentionally ignored: a denied mic records video-only.
+      await ensureMicPermission();
       const res = await chrome.runtime.sendMessage({ type: "WM_OFFSCREEN_START" }).catch(
         () => null
       );
