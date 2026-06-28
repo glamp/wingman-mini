@@ -64,11 +64,13 @@
     }
   }
 
-  async function submitSession({ fields, context, transcript, consoleText }) {
+  async function submitSession({ fields, context, transcript, consoleText, settings: passed }) {
     if (!session || !session.videoBlobs) {
       throw new Error("No finished recording to submit.");
     }
-    const settings = await storage.getSettings();
+    // chrome.storage isn't accessible from an offscreen document, so the service worker reads
+    // the settings and hands them in. Merge over defaults to fill any unset fields (e.g. R2).
+    const settings = Object.assign({}, storage.DEFAULTS, passed || {});
     const auth = { apiKey: settings.apiKey, token: settings.token };
     if (!auth.apiKey) throw new Error("Missing Trello API key. Open Wingman options.");
     if (!auth.token) throw new Error("Missing Trello token. Open Wingman options.");

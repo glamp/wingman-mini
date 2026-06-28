@@ -215,8 +215,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "WM_SUBMIT_RECORDING") {
     (async () => {
+      // The offscreen doc can't read chrome.storage (only chrome.runtime is available to it),
+      // so the service worker reads the settings here and passes them along for the upload.
+      const { "wingman:settings": settings } = await chrome.storage.local.get("wingman:settings");
       const res = await chrome.runtime
-        .sendMessage({ type: "WM_OFFSCREEN_SUBMIT", payload: msg.payload })
+        .sendMessage({
+          type: "WM_OFFSCREEN_SUBMIT",
+          payload: { ...msg.payload, settings: settings || {} },
+        })
         .catch(() => null);
       if (res && res.ok) {
         await setRec(null);
