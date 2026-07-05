@@ -20,6 +20,28 @@
     return u.toString();
   }
 
+  // Build a URL carrying ONLY the small auth params in the query string. Large
+  // params (name/desc/idLabels) go in the request body to avoid HTTP 414 from
+  // CloudFront's URI length limit.
+  function authUrl(path, auth) {
+    const u = new URL(BASE + path);
+    u.searchParams.set("key", auth.apiKey);
+    u.searchParams.set("token", auth.token);
+    return u.toString();
+  }
+
+  // Encode params as an application/x-www-form-urlencoded body. Passing a
+  // URLSearchParams as fetch `body` auto-sets the correct Content-Type (a
+  // CORS-safelisted type, so no preflight). Skip null/undefined values.
+  function formBody(params) {
+    const body = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v === undefined || v === null) continue;
+      body.set(k, v);
+    }
+    return body;
+  }
+
   async function getJson(res, whatFailed) {
     if (res.status === 401) throw new Error("Invalid Trello credentials.");
     if (!res.ok) {
@@ -76,7 +98,10 @@
     if (!listId) throw new Error("No list selected.");
     const params = { idList: listId, name, desc };
     if (labelIds && labelIds.length) params.idLabels = labelIds.join(",");
-    const res = await fetch(url("/cards", auth, params), { method: "POST" });
+    const res = await fetch(authUrl("/cards", auth), {
+      method: "POST",
+      body: formBody(params),
+    });
     if (res.status === 401) throw new Error("Invalid Trello credentials.");
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -110,17 +135,20 @@
   // file) instead of uploading bytes. Used for files too large for Trello.
   async function attachUrlToCard(auth, cardId, linkUrl, name) {
     requireAuth(auth);
-    const res = await fetch(
-      url(`/cards/${cardId}/attachments`, auth, { url: linkUrl, name: name || "" }),
-      { method: "POST" }
-    );
+    const res = await fetch(authUrl(`/cards/${cardId}/attachments`, auth), {
+      method: "POST",
+      body: formBody({ url: linkUrl, name: name || "" }),
+    });
     return getJson(res, `Failed to attach link "${name || linkUrl}" to the card`);
   }
 
   // PUT /cards/{id} — update the card description (used to append R2 media links).
   async function updateCardDesc(auth, cardId, desc) {
     requireAuth(auth);
-    const res = await fetch(url(`/cards/${cardId}`, auth, { desc }), { method: "PUT" });
+    const res = await fetch(authUrl(`/cards/${cardId}`, auth), {
+      method: "PUT",
+      body: formBody({ desc }),
+    });
     return getJson(res, "Failed to update the card description");
   }
 
