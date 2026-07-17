@@ -67,7 +67,10 @@
                 <button id="startRec" class="wm-btn">Start recording</button>
               </div>
               <div id="recordDone" hidden>
-                <img id="recPoster" class="wm-video" alt="recording preview" hidden />
+                <div id="recPreview" class="wm-preview" hidden>
+                  <img id="recPoster" class="wm-video" alt="recording preview" />
+                  <button id="recPlay" class="wm-play" title="Play recording" aria-label="Play recording">▶</button>
+                </div>
                 <div class="wm-shotbar">
                   <span class="wm-hint">Recording ready to attach.</span>
                   <button id="recAgain" class="wm-link">Record again</button>
@@ -220,6 +223,7 @@
     if (state.segmentCount && !state.submitted) {
       chrome.runtime.sendMessage({ type: "WM_DISCARD_RECORDING" }).catch(() => {});
     }
+    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
     removeRecordingControls();
     state.host.remove();
     state = null;
@@ -398,6 +402,7 @@
     const { $ } = state;
     $("startRec").addEventListener("click", startRec);
     $("recAgain").addEventListener("click", recordAgain);
+    $("recPlay").addEventListener("click", playRecording);
   }
 
   async function startRec() {
@@ -418,6 +423,7 @@
     if (!state) return;
     state.segmentCount = 0;
     state.transcript = "";
+    resetPreview();
     state.$("recordDone").hidden = true;
     state.$("recordIdle").hidden = false;
   }
@@ -452,14 +458,113 @@
     state.host.style.display = "block";
     setMode("recording");
     state.segmentCount = payload.segmentCount || 1;
+    resetPreview();
     if (payload.posterBase64) {
       $("recPoster").src = `data:${payload.posterType || "image/png"};base64,${payload.posterBase64}`;
-      $("recPoster").hidden = false;
+      // Only offer inline playback for a single-segment recording — a split one has no one
+      // blob to play, and the poster alone still communicates "recording ready".
+      $("recPlay").hidden = state.segmentCount !== 1;
+      $("recPreview").hidden = false;
     }
     $("recordIdle").hidden = true;
     $("recordDone").hidden = false;
     if (payload.audioBase64) transcribeAndFillBase64(payload.audioBase64, payload.audioType);
     else voiceStatus("No microphone audio captured — fill the form manually.", "info");
+  }
+
+  // Inline preview. Very long recordings would balloon in memory as base64, so cap it and
+  // fall back to the poster; the file still attaches to the card either way.
+  const PREVIEW_MAX_BYTES = 100 * 1024 * 1024;
+  // Kept small on purpose: base64 inflates the payload ~1.33x, and large chrome.runtime
+  // messages fail to deliver. 512 KiB raw → ~700 KiB on the wire, near the poster we already
+  // pass reliably. A long recording just takes more round trips.
+  const PREVIEW_CHUNK = 512 * 1024;
+
+  function b64ToBytes(b64) {
+    const binary = atob(b64 || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+
+  // Return the preview to its poster + play-button state and free any playback blob.
+  function resetPreview() {
+    if (!state) return;
+    const { $ } = state;
+    if (state.previewUrl) {
+      URL.revokeObjectURL(state.previewUrl);
+      state.previewUrl = null;
+    }
+    const video = $("recVideo");
+    if (video) video.remove();
+    const poster = $("recPoster");
+    if (poster) poster.hidden = false;
+    const play = $("recPlay");
+    if (play) {
+      play.hidden = false;
+      play.disabled = false;
+      play.textContent = "▶";
+    }
+  }
+
+  // Pull the recording out of the offscreen doc in base64 chunks, rebuild the Blob here, and
+  // swap the poster for a real <video>. Seeking works because capture.js wrote a Cues index.
+  // Blobs can't cross chrome.runtime, which is why this chunks rather than passing the Blob.
+  async function playRecording() {
+    if (!state) return;
+    const { $ } = state;
+    const play = $("recPlay");
+    if (play.disabled) return;
+    play.disabled = true;
+    play.textContent = "…";
+    try {
+      const get = (offset) =>
+        chrome.runtime
+          .sendMessage({ type: "WM_GET_RECORDING", payload: { offset, length: PREVIEW_CHUNK } })
+          .catch(() => null);
+
+      const first = await get(0);
+      if (!first || !first.ok) {
+        throw new Error((first && first.error) || "Could not load the recording.");
+      }
+      if (first.total > PREVIEW_MAX_BYTES) {
+        voiceStatus("Recording is too large to preview here — it still attaches to the card.", "info");
+        play.hidden = true;
+        return;
+      }
+
+      const parts = [b64ToBytes(first.base64)];
+      let have = parts[0].length;
+      while (have < first.total) {
+        const next = await get(have);
+        if (!next || !next.ok) {
+          throw new Error((next && next.error) || "Could not load the recording.");
+        }
+        const bytes = b64ToBytes(next.base64);
+        if (!bytes.length) break;
+        parts.push(bytes);
+        have += bytes.length;
+      }
+      if (!state) return; // panel closed while loading
+
+      const blob = new Blob(parts, { type: first.type || "video/webm" });
+      state.previewUrl = URL.createObjectURL(blob);
+      const video = document.createElement("video");
+      video.id = "recVideo";
+      video.className = "wm-video";
+      video.controls = true;
+      video.src = state.previewUrl;
+      $("recPoster").hidden = true;
+      play.hidden = true;
+      $("recPreview").insertBefore(video, play);
+      video.play().catch(() => {});
+    } catch (e) {
+      if (state) {
+        play.disabled = false;
+        play.textContent = "▶";
+        voiceStatus(e.message || "Could not load the recording.", "error");
+      }
+    }
   }
 
   // ---- floating recording controls (light DOM, panel-independent) ----
@@ -746,7 +851,13 @@
     const wrap = document.createElement("span");
     wrap.append("Card created. ", link);
     showMsg(null, "success", wrap);
-    $("submit").textContent = "Done";
+    // The card is filed, so the submit button becomes the way out. Re-point it at close()
+    // before re-enabling it, or a second click would file a duplicate card.
+    const btn = $("submit");
+    btn.textContent = "Done";
+    btn.removeEventListener("click", submit);
+    btn.addEventListener("click", close);
+    btn.disabled = false;
   }
 
   async function submit() {

@@ -174,11 +174,15 @@
         if (chunks.length) {
           let blob = new Blob(chunks, { type: videoMime });
           try {
-            // Inject the real Duration so the seek bar works. Falls back to the unpatched
-            // blob on any failure — a non-seekable file still plays.
-            blob = await globalThis.Wingman.fixWebmDuration(blob, performance.now() - startedAt);
+            // Inject the real Duration so the seek bar shows the right length, then build the
+            // Cues index so dragging it actually lands somewhere. Each step degrades on its
+            // own — worst case we attach a file that plays but doesn't scrub.
+            blob = await globalThis.Wingman.fixWebmDurationAndCues(
+              blob,
+              performance.now() - startedAt
+            );
           } catch (e) {
-            /* keep the unpatched blob */
+            /* keep the raw blob */
           }
           videoBlobs.push(blob);
         }

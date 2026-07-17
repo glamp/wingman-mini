@@ -124,6 +124,23 @@
     return { shortUrl: card.shortUrl, r2Links };
   }
 
+  // Hand the page a slice of a finished recording so it can rebuild the Blob for playback.
+  // The Blob can't cross chrome.runtime, so the page pulls it in base64 chunks and reassembles
+  // it in its own context. `total` lets the caller know when it has the whole file.
+  async function getRecordingChunk({ index = 0, offset = 0, length } = {}) {
+    if (!session || !session.videoBlobs) throw new Error("No finished recording.");
+    const blob = session.videoBlobs[index];
+    if (!blob) throw new Error("No such recording segment.");
+    const slice = length ? blob.slice(offset, offset + length) : blob.slice(offset);
+    const base64 = await capture.blobToBase64(slice);
+    return {
+      base64,
+      total: blob.size,
+      type: blob.type || "video/webm",
+      count: session.videoBlobs.length,
+    };
+  }
+
   async function discardSession() {
     if (session && session.controller) {
       try {
@@ -155,6 +172,13 @@
     if (msg.type === "WM_OFFSCREEN_SUBMIT") {
       submitSession(msg.payload || {})
         .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((e) => sendResponse({ ok: false, error: e.message }));
+      return true;
+    }
+
+    if (msg.type === "WM_OFFSCREEN_GET_RECORDING") {
+      getRecordingChunk(msg.payload || {})
+        .then((r) => sendResponse({ ok: true, ...r }))
         .catch((e) => sendResponse({ ok: false, error: e.message }));
       return true;
     }

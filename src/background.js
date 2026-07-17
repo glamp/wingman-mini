@@ -233,6 +233,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "WM_GET_RECORDING") {
+    (async () => {
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "WM_OFFSCREEN_GET_RECORDING",
+          payload: msg.payload || {},
+        });
+        return res || { ok: false, error: "No response from the recorder." };
+      } catch (e) {
+        return { ok: false, error: `Recorder unavailable: ${(e && e.message) || e}` };
+      }
+    })().then(sendResponse);
+    return true;
+  }
+
   if (msg.type === "WM_DISCARD_RECORDING") {
     (async () => {
       await chrome.runtime.sendMessage({ type: "WM_OFFSCREEN_DISCARD" }).catch(() => {});

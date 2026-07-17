@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wingman",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "Capture a screenshot or screen recording and file a clean Trello card.",
   "permissions": ["activeTab", "tabs", "scripting", "storage", "notifications", "offscreen"],
   "host_permissions": [
@@ -28,6 +28,7 @@
         "src/trello.js",
         "src/r2.js",
         "src/webm-duration.js",
+        "src/webm-cues.js",
         "src/capture.js",
         "src/draw.js",
         "src/overlay.js",

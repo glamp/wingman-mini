@@ -275,6 +275,33 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #000;
+  display: block;
+}
+.wm-preview {
+  position: relative;
+  margin: 8px 0 4px;
+}
+.wm-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 56px;
+  height: 56px;
+  padding: 0 0 0 4px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wm-play:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+.wm-play:disabled {
+  cursor: default;
 }
 
 #recordIdle {
