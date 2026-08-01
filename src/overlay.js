@@ -183,6 +183,7 @@
       audioBlob: null,
       transcript: "",
       segmentCount: 0, // > 0 once a recording is finished and pending submit
+      submitting: false, // a submit is in flight; close() must not discard the recording
       submitted: false,
       consoleLogs: Array.isArray(consoleLogs) ? consoleLogs : [],
       onMove: null,
@@ -219,8 +220,10 @@
     if (state.onMove) window.removeEventListener("mousemove", state.onMove);
     if (state.onUp) window.removeEventListener("mouseup", state.onUp);
     // Abandon a finished-but-unsubmitted recording so it doesn't linger in the offscreen
-    // doc or pop back up on the next page load.
-    if (state.segmentCount && !state.submitted) {
+    // doc or pop back up on the next page load. A submit already in flight is exempt:
+    // discarding it would kill the upload the user is waiting on. It finishes on its own
+    // and announces itself with a notification.
+    if (state.segmentCount && !state.submitted && !state.submitting) {
       chrome.runtime.sendMessage({ type: "WM_DISCARD_RECORDING" }).catch(() => {});
     }
     if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
@@ -419,6 +422,7 @@
   }
 
   async function recordAgain() {
+    if (!state || state.submitting) return; // the recording is mid-upload; leave it alone
     await chrome.runtime.sendMessage({ type: "WM_DISCARD_RECORDING" }).catch(() => {});
     if (!state) return;
     state.segmentCount = 0;
@@ -793,6 +797,7 @@
   }
 
   function voiceStatus(text, kind) {
+    if (!state) return; // panel closed while the work that produced this was in flight
     const s = state.$("voiceStatus");
     s.hidden = false;
     s.className = "wm-voice-status wm-msg-" + (kind || "info");
@@ -832,7 +837,11 @@
       .join("\n");
   }
 
+  // Every caller of this is downstream of an await, and the panel can be dismissed at any
+  // point during one (Escape, the backdrop, the X). Bail rather than throw on a nulled
+  // `state` — a crash here swallows the very error it was called to report.
   function showMsg(text, kind, node) {
+    if (!state) return;
     const m = state.$("msg");
     m.hidden = false;
     m.className = "wm-msg wm-msg-" + (kind || "info");
@@ -841,6 +850,7 @@
   }
 
   function showCardCreated(shortUrl) {
+    if (!state) return;
     const { $ } = state;
     const link = document.createElement("a");
     link.href = shortUrl;
@@ -861,12 +871,15 @@
   }
 
   async function submit() {
-    const { $ } = state;
+    // Cmd+Enter reaches here even while the submit button is disabled, and a second run
+    // would file a duplicate card.
+    if (!state || state.submitting || state.submitted) return;
     const fields = readForm();
     if (!fields.title.trim()) return showMsg("Please enter a title.", "error");
 
     const settings = await storage.getSettings();
     const auth = { apiKey: settings.apiKey, token: settings.token };
+    if (!state) return; // panel dismissed while we read the settings
     if (!auth.apiKey) return showMsg("Missing Trello API key. Open Wingman options.", "error");
     if (!auth.token) return showMsg("Missing Trello token. Open Wingman options.", "error");
     if (!settings.listId) return showMsg("No Trello list selected. Open Wingman options.", "error");
@@ -882,8 +895,17 @@
 
   // Recording: the blobs live in the offscreen doc, so the create+attach happens there.
   // We just hand over the form fields, page context, transcript, and console text.
+  //
+  // The upload can run for minutes, which is longer than either this panel or the service
+  // worker can be relied on to survive — so the message below only *starts* the job and we
+  // poll for its progress. If the panel goes away, the offscreen doc finishes anyway and
+  // the service worker posts a notification with the card link.
+  const SUBMIT_POLL_MS = 750;
+
   async function submitRecording(fields, settings) {
-    const { $ } = state;
+    const panel = state;
+    const { $ } = panel;
+    panel.submitting = true;
     $("submit").disabled = true;
     showMsg("Creating card…", "info");
     const res = await chrome.runtime
@@ -892,22 +914,54 @@
         payload: {
           fields,
           context: pageContext(settings),
-          transcript: state.transcript,
+          transcript: panel.transcript,
           consoleText: consoleLogsText(),
         },
       })
       .catch(() => null);
-    if (!res || !res.ok) {
-      $("submit").disabled = false;
-      return showMsg((res && res.error) || "Something went wrong.", "error");
+    if (!res || !res.ok) return failSubmit(panel, (res && res.error) || "Something went wrong.");
+    return pollSubmit(panel);
+  }
+
+  // Poll until the job reports done or error. `state !== panel` means this panel was closed
+  // or replaced while we waited, so there is nothing left to update — the notification path
+  // takes over from here.
+  async function pollSubmit(panel) {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, SUBMIT_POLL_MS));
+      if (state !== panel) return;
+      const res = await chrome.runtime
+        .sendMessage({ type: "WM_SUBMIT_STATUS" })
+        .catch(() => null);
+      if (state !== panel) return;
+      if (!res || !res.ok) {
+        return failSubmit(panel, (res && res.error) || "Lost track of the upload.");
+      }
+      if (res.status === "error") return failSubmit(panel, res.error || "Something went wrong.");
+      if (res.status === "done") {
+        panel.submitting = false;
+        panel.submitted = true;
+        // We're showing the link right here, so suppress the fallback notification.
+        chrome.runtime.sendMessage({ type: "WM_SUBMIT_SEEN" }).catch(() => {});
+        return showCardCreated(res.result && res.result.shortUrl);
+      }
+      showMsg(res.phase || "Creating card…", "info");
     }
-    state.submitted = true;
-    showCardCreated(res.shortUrl);
+  }
+
+  function failSubmit(panel, message) {
+    panel.submitting = false;
+    if (state !== panel) return; // nobody to tell; the notification covers it
+    chrome.runtime.sendMessage({ type: "WM_SUBMIT_SEEN" }).catch(() => {});
+    panel.$("submit").disabled = false;
+    showMsg(message, "error");
   }
 
   // Screenshot: the PNG is produced and uploaded in-page (it never leaves this context).
   async function submitScreenshot(fields, auth, settings) {
-    const { $ } = state;
+    const panel = state;
+    const { $ } = panel;
+    panel.submitting = true;
     $("submit").disabled = true;
     showMsg("Creating card…", "info");
     try {
@@ -948,9 +1002,15 @@
           .catch(() => {});
       }
 
-      state.submitted = true;
+      panel.submitting = false;
+      panel.submitted = true;
+      if (state !== panel) return; // card is filed; this panel just isn't around to say so
       showCardCreated(card.shortUrl);
     } catch (err) {
+      // Same reentrancy as the recording path: the panel may be gone by the time an
+      // upload fails, and there is then nothing to report to.
+      panel.submitting = false;
+      if (state !== panel) return;
       $("submit").disabled = false;
       showMsg(err.message || "Something went wrong.", "error");
     }

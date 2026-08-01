@@ -18,6 +18,12 @@
   // Ceiling Cloudflare's edge imposes on a single request body, regardless of Worker code.
   const EDGE_LIMIT = 100 * 1024 * 1024;
   const MAX_ATTEMPTS = 3;
+  // fetch has no built-in deadline, so a connection that goes away mid-transfer without
+  // resetting (laptop sleep, dropped Wi-Fi) leaves the request pending forever and the
+  // submit hangs with no error. Bound every attempt instead; a timeout is just another
+  // retryable failure. The part budget is generous — 10 MiB on a slow uplink is minutes.
+  const CONTROL_TIMEOUT_MS = 30000;
+  const PART_TIMEOUT_MS = 180000;
 
   function mb(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1);
@@ -68,18 +74,25 @@
   // Retry dropped connections and server-side hiccups. Blob bodies are replayable, so
   // re-issuing the identical request is safe. Client errors (401/413/…) come back as a
   // response for the caller to interpret — retrying those would only waste time.
-  async function requestWithRetry(url, init, what) {
+  // The AbortSignal is built per attempt: one that has already fired would abort the
+  // retry the instant it started.
+  async function requestWithRetry(url, init, what, timeoutMs) {
+    const ms = timeoutMs || CONTROL_TIMEOUT_MS;
     let lastErr = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        const res = await fetch(url, init);
+        const res = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
         if ((res.status >= 500 || res.status === 429) && attempt < MAX_ATTEMPTS) {
           await sleep(500 * attempt);
           continue;
         }
         return res;
       } catch (err) {
-        lastErr = err;
+        const name = err && err.name;
+        lastErr =
+          name === "TimeoutError" || name === "AbortError"
+            ? new Error(`no response within ${Math.round(ms / 1000)}s`)
+            : err;
         if (attempt < MAX_ATTEMPTS) await sleep(500 * attempt);
       }
     }
@@ -88,7 +101,9 @@
 
   // Upload in chunks via the Worker's multipart endpoints. Returns { key, url }, or null if
   // the deployed Worker predates those endpoints so the caller can fall back.
-  async function uploadChunked(blob, settings, filename) {
+  // `onProgress({ partNumber, totalParts })` fires before each part so the UI can show that
+  // a big upload is moving rather than sitting on one static "Creating card…".
+  async function uploadChunked(blob, settings, filename, onProgress) {
     const base = settings.r2UploadUrl;
     const headers = authHeaders(settings);
 
@@ -121,6 +136,7 @@
         const partNumber = i + 1;
         const chunk = blob.slice(i * partSize, Math.min((i + 1) * partSize, blob.size));
         const what = `uploading part ${partNumber} of ${totalParts}`;
+        if (onProgress) onProgress({ partNumber, totalParts });
         const query = new URLSearchParams({
           key: created.key,
           uploadId: created.uploadId,
@@ -133,7 +149,8 @@
             headers: { ...headers, "Content-Type": "application/octet-stream" },
             body: chunk,
           },
-          what
+          what,
+          PART_TIMEOUT_MS
         );
         if (res.status === 401 || res.status === 403) throw tokenError(res);
         if (!res.ok) throw await httpError(res, what);
@@ -185,7 +202,8 @@
         },
         body: blob,
       },
-      "uploading the file"
+      "uploading the file",
+      PART_TIMEOUT_MS
     );
     if (res.status === 401 || res.status === 403) throw tokenError(res);
     if (!res.ok) throw await httpError(res, "uploading the file");
@@ -197,12 +215,12 @@
   }
 
   // Store a Blob in R2. Returns { key, url }.
-  async function uploadToR2(blob, settings, filename) {
+  async function uploadToR2(blob, settings, filename, onProgress) {
     if (!settings.r2UploadUrl || !settings.r2UploadToken) {
       throw configError(blob.size);
     }
     if (blob.size > PART_SIZE) {
-      const result = await uploadChunked(blob, settings, filename);
+      const result = await uploadChunked(blob, settings, filename, onProgress);
       if (result) return result;
       if (blob.size > EDGE_LIMIT) {
         throw new Error(
@@ -218,7 +236,7 @@
   // Decide where an attachment goes and put it there. Small files upload directly to
   // Trello; large files (or ones Trello 413s on) go to R2 and we attach the URL.
   // Returns { via: "trello" | "r2", filename, url? }.
-  async function uploadAttachment(auth, cardId, blob, filename, settings) {
+  async function uploadAttachment(auth, cardId, blob, filename, settings, onProgress) {
     const { trello } = globalThis.Wingman;
     const configured = !!(settings.r2UploadUrl && settings.r2UploadToken);
 
@@ -239,7 +257,7 @@
       throw configError(blob.size);
     }
 
-    const { url } = await uploadToR2(blob, settings, filename);
+    const { url } = await uploadToR2(blob, settings, filename, onProgress);
     await trello.attachUrlToCard(auth, cardId, url, filename);
     return { via: "r2", filename, url };
   }

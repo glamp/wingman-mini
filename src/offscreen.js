@@ -9,6 +9,13 @@
   // { controller, finishPromise, videoBlobs, audioBlob, posterBlob, endedSent }
   let session = null;
 
+  // The submit runs here, detached from the message that started it: creating the card and
+  // pushing a large recording to R2 takes minutes, and holding a chrome.runtime response
+  // open that long is a losing bet (the service worker gets torn down, the page can be
+  // closed). Instead the page starts the job, then polls this state for progress.
+  // { status: "running" | "done" | "error", phase, result, error }
+  let submitJob = null;
+
   async function startSession() {
     if (session) await discardSession();
     const controller = await capture.startRecording({ onEnded: handleEnded });
@@ -64,10 +71,19 @@
     }
   }
 
-  async function submitSession({ fields, context, transcript, consoleText, settings: passed }) {
+  async function submitSession(
+    { fields, context, transcript, consoleText, settings: passed },
+    onPhase
+  ) {
     if (!session || !session.videoBlobs) {
       throw new Error("No finished recording to submit.");
     }
+    // Take the blobs now rather than reading session.* as we go: this runs detached and can
+    // outlive the session it came from (the user is free to start a new recording while an
+    // upload is still going).
+    const { videoBlobs, posterBlob } = session;
+    const phase = onPhase || (() => {});
+    phase("Creating card…");
     // chrome.storage isn't accessible from an offscreen document, so the service worker reads
     // the settings and hands them in. Merge over defaults to fill any unset fields (e.g. R2).
     const settings = Object.assign({}, storage.DEFAULTS, passed || {});
@@ -82,7 +98,7 @@
       context,
       "recording",
       transcript,
-      session.videoBlobs.length
+      videoBlobs.length
     );
     const labelIds = await trello
       .resolveLabelIds(auth, settings.boardId, settings.defaultLabels)
@@ -95,33 +111,76 @@
     });
 
     const r2Links = [];
-    const attach = async (blob, filename) => {
-      const result = await r2.uploadAttachment(auth, card.id, blob, filename, settings);
+    const attach = async (blob, filename, label) => {
+      phase(`Uploading ${label}…`);
+      const onProgress = ({ partNumber, totalParts }) =>
+        phase(`Uploading ${label} — part ${partNumber} of ${totalParts}…`);
+      const result = await r2.uploadAttachment(
+        auth,
+        card.id,
+        blob,
+        filename,
+        settings,
+        onProgress
+      );
       if (result.via === "r2") r2Links.push({ filename: result.filename, url: result.url });
     };
 
-    const blobs = session.videoBlobs;
+    const blobs = videoBlobs;
     if (blobs.length === 1) {
-      await attach(blobs[0], "recording.webm");
+      await attach(blobs[0], "recording.webm", "the recording");
     } else {
       for (let i = 0; i < blobs.length; i++) {
-        await attach(blobs[i], `recording-${i + 1}.webm`);
+        await attach(blobs[i], `recording-${i + 1}.webm`, `recording ${i + 1} of ${blobs.length}`);
       }
     }
-    if (session.posterBlob) await attach(session.posterBlob, "poster.png");
+    if (posterBlob) await attach(posterBlob, "poster.png", "the poster");
     if (consoleText) {
-      await attach(new Blob([consoleText], { type: "text/plain" }), "console-logs.txt");
+      await attach(
+        new Blob([consoleText], { type: "text/plain" }),
+        "console-logs.txt",
+        "the console logs"
+      );
     }
 
     // For anything stored in R2, also surface the link in the card description.
     if (r2Links.length) {
+      phase("Finishing up…");
       const lines = r2Links.map((l) => `📎 [${l.filename}](${l.url})`).join("\n");
       await trello
         .updateCardDesc(auth, card.id, `${desc}\n\n## Media\n${lines}`)
         .catch(() => {}); // URL attachments are already on the card; don't fail the submit
     }
 
-    return { shortUrl: card.shortUrl, r2Links };
+    return { shortUrl: card.shortUrl, cardName: name, r2Links };
+  }
+
+  // Kick off a submit and return immediately. Idempotent while one is running: the card is
+  // created before any upload, so starting a second job would file a duplicate card.
+  function startSubmit(payload) {
+    if (submitJob && submitJob.status === "running") return submitJob;
+    submitJob = { status: "running", phase: "Creating card…" };
+    const job = submitJob;
+    submitSession(payload, (text) => {
+      if (submitJob === job) submitJob.phase = text;
+    })
+      .then((result) => {
+        if (submitJob !== job) return;
+        submitJob = { status: "done", result };
+        // Tell the service worker even if nobody is polling — the panel may have been
+        // closed, and this is what clears the recording state and posts the notification.
+        chrome.runtime
+          .sendMessage({ type: "WM_OFFSCREEN_SUBMIT_DONE", result })
+          .catch(() => {});
+      })
+      .catch((e) => {
+        if (submitJob !== job) return;
+        const error = (e && e.message) || "Something went wrong.";
+        submitJob = { status: "error", error };
+        // Deliberately no cleanup here: the recording stays put so the user can retry.
+        chrome.runtime.sendMessage({ type: "WM_OFFSCREEN_SUBMIT_FAILED", error }).catch(() => {});
+      });
+    return submitJob;
   }
 
   // Hand the page a slice of a finished recording so it can rebuild the Blob for playback.
@@ -142,6 +201,10 @@
   }
 
   async function discardSession() {
+    // A submit in flight is still reading session.videoBlobs. Closing the panel fires a
+    // discard, and dropping the blobs mid-upload would kill the very card the user is
+    // waiting on — so let the job finish and clean up after itself.
+    if (submitJob && submitJob.status === "running") return;
     if (session && session.controller) {
       try {
         await session.controller.stop();
@@ -169,11 +232,24 @@
       return true;
     }
 
+    // Start the job and answer right away; the page polls WM_OFFSCREEN_SUBMIT_STATUS.
     if (msg.type === "WM_OFFSCREEN_SUBMIT") {
-      submitSession(msg.payload || {})
-        .then((result) => sendResponse({ ok: true, ...result }))
-        .catch((e) => sendResponse({ ok: false, error: e.message }));
-      return true;
+      if (!session || !session.videoBlobs) {
+        sendResponse({ ok: false, error: "No finished recording to submit." });
+        return false;
+      }
+      startSubmit(msg.payload || {});
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (msg.type === "WM_OFFSCREEN_SUBMIT_STATUS") {
+      sendResponse(
+        submitJob
+          ? { ok: true, ...submitJob }
+          : { ok: false, error: "That upload is no longer running." }
+      );
+      return false;
     }
 
     if (msg.type === "WM_OFFSCREEN_GET_RECORDING") {
@@ -184,9 +260,12 @@
     }
 
     if (msg.type === "WM_OFFSCREEN_DISCARD") {
+      // `busy` tells the service worker to leave this document alive — closing it would
+      // abort an upload that is still running.
+      const busy = !!(submitJob && submitJob.status === "running");
       discardSession()
-        .then(() => sendResponse({ ok: true }))
-        .catch(() => sendResponse({ ok: true }));
+        .then(() => sendResponse({ ok: true, busy }))
+        .catch(() => sendResponse({ ok: true, busy }));
       return true;
     }
 

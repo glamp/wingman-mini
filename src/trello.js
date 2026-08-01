@@ -4,6 +4,27 @@
 (function () {
   const BASE = "https://api.trello.com/1";
 
+  // fetch never times out on its own, so a connection that stalls mid-transfer (a laptop
+  // waking from sleep is the usual cause) would leave the submit hanging forever with no
+  // way out. Every call gets a deadline; file uploads get a longer one since they carry
+  // up to Trello's 10 MB limit.
+  const TIMEOUT_MS = 30000;
+  const UPLOAD_TIMEOUT_MS = 180000;
+
+  // fetch + deadline, with the abort translated into something worth showing a user.
+  async function request(input, init, what, timeoutMs) {
+    const ms = timeoutMs || TIMEOUT_MS;
+    try {
+      return await fetch(input, { ...init, signal: AbortSignal.timeout(ms) });
+    } catch (err) {
+      const name = err && err.name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new Error(`${what} timed out after ${Math.round(ms / 1000)}s — check your connection.`);
+      }
+      throw new Error(`${what} failed — the connection dropped. (${(err && err.message) || err})`);
+    }
+  }
+
   function requireAuth(auth) {
     if (!auth || !auth.apiKey) throw new Error("Missing Trello API key.");
     if (!auth.token) throw new Error("Missing Trello token.");
@@ -54,14 +75,20 @@
   // GET /members/me — verifies credentials, returns the member.
   async function testConnection(auth) {
     requireAuth(auth);
-    const res = await fetch(url("/members/me", auth, { fields: "fullName,username" }));
+    const res = await request(
+      url("/members/me", auth, { fields: "fullName,username" }),
+      null,
+      "Connecting to Trello"
+    );
     return getJson(res, "Could not connect to Trello");
   }
 
   async function getBoards(auth) {
     requireAuth(auth);
-    const res = await fetch(
-      url("/members/me/boards", auth, { fields: "name", filter: "open" })
+    const res = await request(
+      url("/members/me/boards", auth, { fields: "name", filter: "open" }),
+      null,
+      "Fetching your Trello boards"
     );
     return getJson(res, "Could not fetch boards");
   }
@@ -69,8 +96,10 @@
   async function getListsForBoard(auth, boardId) {
     requireAuth(auth);
     if (!boardId) throw new Error("No board selected.");
-    const res = await fetch(
-      url(`/boards/${boardId}/lists`, auth, { fields: "name", filter: "open" })
+    const res = await request(
+      url(`/boards/${boardId}/lists`, auth, { fields: "name", filter: "open" }),
+      null,
+      "Fetching the board's lists"
     );
     return getJson(res, "Could not fetch lists");
   }
@@ -83,8 +112,10 @@
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
     if (!wanted.length || !boardId) return [];
-    const res = await fetch(
-      url(`/boards/${boardId}/labels`, auth, { fields: "name,color", limit: "1000" })
+    const res = await request(
+      url(`/boards/${boardId}/labels`, auth, { fields: "name,color", limit: "1000" }),
+      null,
+      "Fetching the board's labels"
     );
     const labels = await getJson(res, "Could not fetch labels");
     return labels
@@ -98,10 +129,11 @@
     if (!listId) throw new Error("No list selected.");
     const params = { idList: listId, name, desc };
     if (labelIds && labelIds.length) params.idLabels = labelIds.join(",");
-    const res = await fetch(authUrl("/cards", auth), {
-      method: "POST",
-      body: formBody(params),
-    });
+    const res = await request(
+      authUrl("/cards", auth),
+      { method: "POST", body: formBody(params) },
+      "Creating the Trello card"
+    );
     if (res.status === 401) throw new Error("Invalid Trello credentials.");
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -115,10 +147,12 @@
     requireAuth(auth);
     const form = new FormData();
     form.append("file", blob, filename);
-    const res = await fetch(url(`/cards/${cardId}/attachments`, auth), {
-      method: "POST",
-      body: form,
-    });
+    const res = await request(
+      url(`/cards/${cardId}/attachments`, auth),
+      { method: "POST", body: form },
+      `Attaching "${filename}"`,
+      UPLOAD_TIMEOUT_MS
+    );
     if (res.status === 401) throw new Error("Invalid Trello credentials.");
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -135,20 +169,22 @@
   // file) instead of uploading bytes. Used for files too large for Trello.
   async function attachUrlToCard(auth, cardId, linkUrl, name) {
     requireAuth(auth);
-    const res = await fetch(authUrl(`/cards/${cardId}/attachments`, auth), {
-      method: "POST",
-      body: formBody({ url: linkUrl, name: name || "" }),
-    });
+    const res = await request(
+      authUrl(`/cards/${cardId}/attachments`, auth),
+      { method: "POST", body: formBody({ url: linkUrl, name: name || "" }) },
+      `Attaching the link "${name || linkUrl}"`
+    );
     return getJson(res, `Failed to attach link "${name || linkUrl}" to the card`);
   }
 
   // PUT /cards/{id} — update the card description (used to append R2 media links).
   async function updateCardDesc(auth, cardId, desc) {
     requireAuth(auth);
-    const res = await fetch(authUrl(`/cards/${cardId}`, auth), {
-      method: "PUT",
-      body: formBody({ desc }),
-    });
+    const res = await request(
+      authUrl(`/cards/${cardId}`, auth),
+      { method: "PUT", body: formBody({ desc }) },
+      "Updating the card description"
+    );
     return getJson(res, "Failed to update the card description");
   }
 
